@@ -202,6 +202,13 @@ STATIONS = {
     "reims": "CHAMPAGNE ARDENNE TGV",
     "metz": "METZ VILLE",
     "nancy": "NANCY",
+    "marne": "Marne-la-Vallée Chessy",
+    "disney": "Marne-la-Vallée Chessy",
+    "cdg": "Aéroport Charles de Gaulle 2 TGV",
+    "aeroport_cdg": "Aéroport Charles de Gaulle 2 TGV",
+    "lyon_aeroport": "Lyon Saint-Exupéry TGV",
+    "massy": "Massy TGV",
+    "valence": "Valence TGV Rhône-Alpes Sud",
 }
 
 

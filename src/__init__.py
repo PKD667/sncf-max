@@ -1,253 +1,78 @@
-"""SNCF Max API - Discover and book TGV Max trips.
+"""SNCF Max API.
+Module-based TGV Max trip discovery and booking.
 
-This package provides:
-- Trip discovery via the public SNCF data API
-- Automated booking via browser automation (Playwright)
-- Availability monitoring with notifications
-- Calendar-based scheduling for recurring trips
-- CLI interface for easy usage
+Usage:
+    from core import search, broadcast, hunt
+    result = search("paris", "lyon", date(2025, 6, 15))
 
-Quick Start:
-    >>> from src import TGVMaxAPI
-    >>> from datetime import date
-    >>> 
-    >>> api = TGVMaxAPI()
-    >>> trips = api.search("paris", "lyon", date(2025, 1, 15))
-    >>> print(f"Found {len(trips)} trips")
-    >>> 
-    >>> # Book a trip (requires authentication)
-    >>> api.login("your@email.com", "password")
-    >>> result = api.book(trips[0])
-    >>> print(result)
-
-CLI Usage:
-    $ sncf-max search paris-lyon
-    $ sncf-max watch paris-lyon --auto-book
-    $ sncf-max trips
-    $ sncf-max schedule add paris-lyon --name "Friday" --days fri
+    # CLI
+    $ python -m cli search paris-lyon
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
-# Core models
-from models import (
-    Trip,
-    Station,
-    TripStatus,
-    BookingRequest,
-    BookingResult,
-    BookingStatus,
-    SearchCriteria,
-    UserCredentials,
-    Session,
-)
+# ---- data ----------------------------------------------------------------
+from models import Trip, Station, TripStatus, BookingRequest, BookingResult, \
+    BookingStatus, SearchCriteria, UserCredentials, Session
 
-# Configuration
-from config import (
-    SNCFConfig,
-    default_config,
-    get_station_name,
-    STATIONS,
-)
+# ---- config --------------------------------------------------------------
+from config import SNCFConfig, default_config, get_station_name, STATIONS
 
-# Discovery client (public API)
+# ---- API client (public data) --------------------------------------------
 from client import SNCFMaxClient
 
-# High-level API
-from api import (
-    TGVMaxAPI,
-    quick_search,
-    quick_book,
-)
+# ---- core algorithm ------------------------------------------------------
+from core import search, autobook, broadcast, SearchResult
 
-# Scheduler
-from scheduler import (
-    TGVMaxScheduler,
-    RecurringTrip,
-    OneTimeTrip,
-    TimeWindow,
-    Weekday,
-    create_weekly_commute,
-)
+# ---- facade --------------------------------------------------------------
+from api import TGVMaxAPI
 
-# Scanner
-from scanner import (
-    ContinuousScanner,
-    ScanTarget,
-    ScanResult,
-    ScanMode,
-)
+# ---- graph (TGV network topology) ----------------------------------------
+from graph import TGVGraph, build_graph
 
-# Trip Decomposition
-from decomposition import (
-    TripDecomposer,
-    CompositeTrip,
-    TripLeg,
-    find_trip_with_decomposition,
-    INTERMEDIATE_STATIONS,
-)
+# ---- decomposition -------------------------------------------------------
+from decomposition import TripDecomposer, CompositeTrip, TripLeg, \
+    find_trip_with_decomposition
 
-# Deadline-based search
-from deadline import (
-    DeadlineSearcher,
-    DeadlineBooker,
-    DeadlineConstraint,
-    DeadlineMatch,
-    DeadlineStrategy,
-    search_by_deadline,
-    find_best_for_deadline,
-    book_for_deadline,
-)
+# ---- finder --------------------------------------------------------------
+from finder import FreeTripFinder, FinderReport, FreeTripBucket, hunt
 
-# Monitor
-from monitor import (
-    TGVMaxMonitor,
-    WatchRequest,
-    AlertEvent,
-    watch_and_book,
-    quick_monitor,
-)
+# ---- monitor -------------------------------------------------------------
+from monitor import TGVMaxMonitor, WatchRequest, AlertEvent, quick_monitor
 
-# Authentication (requires playwright)
-try:
-    from auth import (
-        SNCFAuthenticator,
-        AuthenticationError,
-        login_sync,
-        load_or_login,
-    )
-except ImportError:
-    pass
+# ---- scheduler -----------------------------------------------------------
+from scheduler import TGVMaxScheduler, RecurringTrip, OneTimeTrip, \
+    TimeWindow, Weekday, create_weekly_commute
 
-# Booking (requires playwright)
-try:
-    from booking import (
-        SNCFBookingClient,
-        BookingError,
-        book_sync,
-        auto_book,
-    )
-except ImportError:
-    pass
+# ---- scanner -------------------------------------------------------------
+from scanner import ContinuousScanner, ScanTarget, ScanResult, ScanMode
 
-# Voyages / Trip management (requires playwright)
-try:
-    from voyages import (
-        MesVoyagesClient,
-        BookedTrip,
-        VoyagesStatus,
-        TripState,
-        MAX_TGVMAX_BOOKINGS,
-        fetch_my_trips_sync,
-        cancel_trip_sync,
-    )
-except ImportError:
-    pass
-
-# Browser debugging (requires playwright)
-try:
-    from browser_debug import (
-        BrowserDebugger,
-        SelectorTest,
-        PageState,
-        run_debug_session,
-        debug_sync,
-    )
-except ImportError:
-    pass
+# ---- booking (playwright required) ---------------------------------------
+from booking.auth import SNCFAuthenticator, AuthenticationError, login_sync, load_or_login
+from booking.booking import SNCFBookingClient, BookingError, book_sync, auto_book
+from booking.voyages import MesVoyagesClient, BookedTrip, VoyagesStatus, TripState, \
+    MAX_TGVMAX_BOOKINGS, fetch_my_trips_sync, cancel_trip_sync
+from booking.debug import BrowserDebugger, SelectorTest, PageState, \
+    run_debug_session, debug_sync
 
 __all__ = [
-    # Version
     "__version__",
-    
-    # Models
-    "Trip",
-    "Station", 
-    "TripStatus",
-    "BookingRequest",
-    "BookingResult",
-    "BookingStatus",
-    "SearchCriteria",
-    "UserCredentials",
-    "Session",
-    
-    # Config
-    "SNCFConfig",
-    "default_config",
-    "get_station_name",
-    "STATIONS",
-    
-    # Clients
+    "Trip", "Station", "TripStatus", "BookingRequest", "BookingResult",
+    "BookingStatus", "SearchCriteria", "UserCredentials", "Session",
+    "SNCFConfig", "default_config", "get_station_name", "STATIONS",
     "SNCFMaxClient",
+    "search", "autobook", "broadcast", "SearchResult",
     "TGVMaxAPI",
-    
-    # Scheduler
-    "TGVMaxScheduler",
-    "RecurringTrip",
-    "OneTimeTrip", 
-    "TimeWindow",
-    "Weekday",
+    "TGVGraph", "build_graph",
+    "TripDecomposer", "CompositeTrip", "TripLeg", "find_trip_with_decomposition",
+    "FreeTripFinder", "FinderReport", "FreeTripBucket", "hunt",
+    "TGVMaxMonitor", "WatchRequest", "AlertEvent", "quick_monitor",
+    "TGVMaxScheduler", "RecurringTrip", "OneTimeTrip", "TimeWindow", "Weekday",
     "create_weekly_commute",
-    
-    # Scanner
-    "ContinuousScanner",
-    "ScanTarget",
-    "ScanResult",
-    "ScanMode",
-    
-    # Auth
-    "SNCFAuthenticator",
-    "AuthenticationError",
-    "login_sync",
-    "load_or_login",
-    
-    # Booking
-    "SNCFBookingClient",
-    "BookingError",
-    "book_sync",
-    "auto_book",
-    
-    # Voyages
-    "MesVoyagesClient",
-    "BookedTrip",
-    "VoyagesStatus",
-    "TripState",
-    "MAX_TGVMAX_BOOKINGS",
-    "fetch_my_trips_sync",
-    "cancel_trip_sync",
-    
-    # Monitoring
-    "TGVMaxMonitor",
-    "WatchRequest",
-    "AlertEvent",
-    "watch_and_book",
-    "quick_monitor",
-    
-    # Decomposition
-    "TripDecomposer",
-    "CompositeTrip",
-    "TripLeg",
-    "find_trip_with_decomposition",
-    "INTERMEDIATE_STATIONS",
-    
-    # Deadline
-    "DeadlineSearcher",
-    "DeadlineBooker",
-    "DeadlineConstraint",
-    "DeadlineMatch",
-    "DeadlineStrategy",
-    "search_by_deadline",
-    "find_best_for_deadline",
-    "book_for_deadline",
-    
-    # Convenience
-    "quick_search",
-    "quick_book",
-    
-    # Browser debugging
-    "BrowserDebugger",
-    "SelectorTest",
-    "PageState",
-    "run_debug_session",
-    "debug_sync",
+    "ContinuousScanner", "ScanTarget", "ScanResult", "ScanMode",
+    "SNCFAuthenticator", "AuthenticationError", "login_sync", "load_or_login",
+    "SNCFBookingClient", "BookingError", "book_sync", "auto_book",
+    "MesVoyagesClient", "BookedTrip", "VoyagesStatus", "TripState",
+    "MAX_TGVMAX_BOOKINGS", "fetch_my_trips_sync", "cancel_trip_sync",
+    "BrowserDebugger", "SelectorTest", "PageState", "run_debug_session", "debug_sync",
 ]

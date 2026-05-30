@@ -21,7 +21,7 @@ from models import (
     Session, UserCredentials
 )
 from config import SNCFConfig, default_config, get_station_name
-from auth import SNCFAuthenticator, AuthenticationError
+from .auth import SNCFAuthenticator, AuthenticationError
 
 
 class BookingError(Exception):

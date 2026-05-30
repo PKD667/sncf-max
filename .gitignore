@@ -1,5 +1,10 @@
-test*
 __pycache__/
+*.pyc
+.direnv/
+.pytest_cache/
 flake.lock
 session.json
 .env
+*.zip
+venv/
+.venv/
