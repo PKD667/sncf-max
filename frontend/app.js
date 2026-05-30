@@ -92,7 +92,7 @@ function drawRoute(originName,destName,trips){
   if(o&&d){var pts=[o,d];if(trips)trips.forEach(function(t){var dd=latlng(t.destination);if(dd)pts.push(dd)});map.fitBounds(L.latLngBounds(pts),{padding:[40,40],maxZoom:9})}
 }
 
-// click: detail + map
+// click: detail + map + stop list
 function showTrip(t){
   routeLayer.clearLayers();var L=window.L;
   var o=t.origin,d=t.destination,oc=latlng(o),dc=latlng(d);
@@ -103,15 +103,31 @@ function showTrip(t){
     map.fitBounds(L.latLngBounds([oc,dc]),{padding:[40,40],maxZoom:8});
   }
   show('detail');
-  document.getElementById('dt').innerHTML=
-    '<div style=line-height:1.8>'+
+  var html='<div style=line-height:1.8>'+
     '<span class=\"tag tag-m\">MAX</span> '+
     'Train <b style=color:var(--hi)>'+t.train_number+'</b><br>'+
     '<span style=color:var(--dim)>'+t.departure_date+'</span><br>'+
+    '<div style=margin-top:4px>'+
     '<b>'+t.departure_time+'</b> '+o+'<br>'+
     '<b>'+t.arrival_time+'</b> '+d+'<br>'+
     '<span style=color:var(--dim)>'+t.duration_min+' min | '+(t.entity||'')+'</span>'+
+    '</div>'+
+    '<div id=\"stopList\" style=\"margin-top:6px;color:var(--dim);font-size:10px\">loading stops...</div>'+
     '</div>';
+  document.getElementById('dt').innerHTML=html;
+
+  // fetch stop list
+  var params='train='+t.train_number+'&date='+t.departure_date;
+  fetch('/api/train_stops?'+params).then(function(r){return r.json()}).then(function(s){
+    var stops=s.stops||[];
+    var h='<div style=\"margin-top:4px;border-top:1px solid var(--border);padding-top:4px\">stops: ';
+    stops.forEach(function(s,i){
+      var icon=s.type==='departure'?'&rarr;':'&larr;';
+      h+='<span style=color:var(--hi)>'+s.time+'</span> '+icon+' '+trunc(s.station,16)+(i<stops.length-1?' | ':'');
+    });
+    h+='</div>';
+    document.getElementById('stopList').innerHTML=h;
+  }).catch(function(){document.getElementById('stopList').innerHTML='';});
 }
 function showComposite(c){
   routeLayer.clearLayers();var L=window.L;var pts=[];
@@ -123,6 +139,7 @@ function showComposite(c){
     html+='Train <b style=color:var(--hi)>'+l.train_number+'</b><br>';
     html+='<b>'+l.departure_time+'</b> '+l.origin+'<br><b>'+l.arrival_time+'</b> '+l.destination+'<br>';
     html+='<span style=color:var(--dim)>'+l.duration_min+'min</span><br>';
+    html+='<div id=leg'+i+'stops style=\"font-size:9px;color:var(--dim)\"></div>';
     if(f&&t){
       var color=i===0?'#10b981':'#3730a3';
       routeLayer.addLayer(L.polyline([f,t],{color:color,weight:2,opacity:0.8}));
@@ -134,6 +151,20 @@ function showComposite(c){
   html+='<span style=color:var(--dim)>total: '+c.total_duration_min+'min | '+c.max_legs+' MAX + '+c.paid_legs+' paid</span></div>';
   if(pts.length)map.fitBounds(L.latLngBounds(pts),{padding:[40,40],maxZoom:7});
   show('detail');document.getElementById('dt').innerHTML=html;
+
+  // fetch stop lists for each leg
+  c.legs.forEach(function(l,i){
+    var p='train='+l.train_number+'&date='+l.departure_date;
+    fetch('/api/train_stops?'+p).then(function(r){return r.json()}).then(function(s){
+      var stops=s.stops||[];
+      var h='stops: ';
+      stops.forEach(function(st,j){
+        h+=st.time+' '+(st.type==='departure'?'&rarr;':'&larr;')+' '+trunc(st.station,14)+(j<stops.length-1?' | ':'');
+      });
+      var el=document.getElementById('leg'+i+'stops');
+      if(el)el.innerHTML=h;
+    }).catch(function(){});
+  });
 }
 
 function priceKey(trip){
