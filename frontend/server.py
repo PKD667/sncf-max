@@ -25,7 +25,7 @@ _src = Path(__file__).resolve().parent.parent / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from network.core import search, broadcast, SearchResult
 from config import STATIONS, get_station_name
 from network.decomposition import CompositeTrip
@@ -38,6 +38,16 @@ HERE = Path(__file__).resolve().parent
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+
+@app.route("/style.css")
+def style():
+    return send_from_directory(str(HERE), "style.css", mimetype="text/css")
+
+
+@app.route("/app.js")
+def app_js():
+    return send_from_directory(str(HERE), "app.js", mimetype="application/javascript")
 
 
 @app.route("/")
