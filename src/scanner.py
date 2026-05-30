@@ -25,7 +25,7 @@ import random
 
 from models import Trip, BookingResult, BookingStatus
 from config import SNCFConfig, default_config, get_station_name
-from client import SNCFMaxClient
+from network.client import SNCFMaxClient
 from api import TGVMaxAPI
 
 

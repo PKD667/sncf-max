@@ -34,7 +34,7 @@ except ImportError:
     Locator = Any
 
 from config import SNCFConfig, default_config
-from auth import SNCFAuthenticator
+from .auth import SNCFAuthenticator
 
 
 @dataclass

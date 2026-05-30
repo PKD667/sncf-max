@@ -24,6 +24,9 @@
           click
           rich
           tabulate
+
+          # Web frontend
+          flask
           
           # Browser automation (for booking)
           playwright
