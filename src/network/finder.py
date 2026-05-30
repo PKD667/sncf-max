@@ -32,13 +32,23 @@ _SCAN_STATIONS: Optional[List[str]] = None
 def _get_scan_stations() -> List[str]:
     global _SCAN_STATIONS
     if _SCAN_STATIONS is None:
-        from network.graph import graph
+        from network.graph import graph, graph_to_api
         g = graph()
-        _SCAN_STATIONS = list(g.keys())
-        # Add API-format names for stations in our station alias map
+        # convert NETEX names to API-compatible names
+        _SCAN_STATIONS = [graph_to_api(s) for s in g.keys()]
+        # deduplicate
+        seen = set()
+        unique = []
+        for s in _SCAN_STATIONS:
+            if s.upper() not in seen:
+                seen.add(s.upper())
+                unique.append(s)
+        _SCAN_STATIONS = unique
+        # add our config station aliases
         from config import STATIONS
         for name in STATIONS.values():
-            if name not in _SCAN_STATIONS:
+            if name.upper() not in seen:
+                seen.add(name.upper())
                 _SCAN_STATIONS.append(name)
     return _SCAN_STATIONS
 

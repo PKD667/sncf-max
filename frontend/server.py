@@ -69,11 +69,15 @@ def api_search():
 
     Query params: origin, destination, date (optional, YYYY-MM-DD)
                   decompose (optional, default 1)
+                  departure_after (optional, HH:MM)
+                  arrival_before (optional, HH:MM)
     """
     origin = request.args.get("origin", "paris")
     destination = request.args.get("destination", "lyon")
     date_str = request.args.get("date", "")
     decompose = request.args.get("decompose", "1") == "1"
+    dep_after = request.args.get("departure_after", "")
+    arr_before = request.args.get("arrival_before", "")
 
     trip_date: Optional[date] = None
     if date_str:
@@ -82,11 +86,27 @@ def api_search():
         except ValueError:
             return jsonify({"error": "bad date format (use YYYY-MM-DD)"}), 400
 
+    from datetime import time as dt_time
+    dep_after_t = None
+    arr_before_t = None
+    if dep_after:
+        try:
+            dep_after_t = datetime.strptime(dep_after, "%H:%M").time()
+        except ValueError:
+            pass
+    if arr_before:
+        try:
+            arr_before_t = datetime.strptime(arr_before, "%H:%M").time()
+        except ValueError:
+            pass
+
     result = search(
         origin=origin,
         destination=destination,
         trip_date=trip_date,
         decompose=decompose,
+        departure_after=dep_after_t,
+        arrival_before=arr_before_t,
     )
     return jsonify(_serialize_result(result))
 
@@ -156,11 +176,13 @@ def _serialize_result(result: SearchResult) -> dict:
         "direct_free": [_trip_to_dict(t) for t in result.direct_free],
         "direct_paid": [_trip_to_dict(t) for t in result.direct_paid],
         "decompositions": [_composite_to_dict(c) for c in result.decompositions],
+        "descentres": [_composite_to_dict(c) for c in result.descentres],
         "has_any_free": result.has_any_free,
         "count_direct_free": len(result.direct_free),
         "count_direct_paid": len(result.direct_paid),
         "count_decomposed_free": sum(1 for c in result.decompositions if c.is_fully_free),
         "count_decomposed_paid": sum(1 for c in result.decompositions if not c.is_fully_free),
+        "count_descentres": len(result.descentres),
     }
 
 
