@@ -57,10 +57,48 @@ def index() -> str:
     return template.read_text()
 
 
-@app.route("/api/stations")
-def api_stations():
-    """Return known station aliases with coordinates for the map."""
-    return jsonify(STATIONS)
+@app.route("/api/train_stops")
+def api_train_stops():
+    """Return all stops for a given train on a date."""
+    train_no = request.args.get("train", "")
+    date_str = request.args.get("date", "")
+    if not train_no:
+        return jsonify({"error": "missing train param"}), 400
+
+    from network.client import SNCFMaxClient
+    client = SNCFMaxClient()
+
+    trip_date = None
+    if date_str:
+        try:
+            trip_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+    response = client.get_trips_raw(
+        trip_date=trip_date, only_available=False, limit=200,
+        train_no=train_no,
+    )
+
+    stops: Dict[str, dict] = {}
+    for r in response.get("results", []):
+        o = r.get("origine", "")
+        d = r.get("destination", "")
+        dep = r.get("heure_depart", "")
+        arr = r.get("heure_arrivee", "")
+        if o and dep:
+            stops[o] = {"station": o, "time": dep, "type": "departure"}
+        if d and arr:
+            stops[d] = {"station": d, "time": arr, "type": "arrival"}
+
+    # sort by time
+    sorted_stops = sorted(stops.values(), key=lambda s: s["time"])
+
+    return jsonify({
+        "train_no": train_no,
+        "date": date_str,
+        "stops": sorted_stops,
+    })
 
 
 @app.route("/api/search")

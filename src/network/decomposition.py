@@ -310,6 +310,9 @@ class TripDecomposer:
                 # does the target station appear in the stop list?
                 if any(target_full.upper() in s.upper() or s.upper() in target_full.upper()
                        for s in stops):
+                    # skip if trip already goes directly to target (shown in DIRECT)
+                    if str(trip.destination).upper() == target_full.upper():
+                        continue
                     results.append(CompositeTrip(legs=[TripLeg(trip=trip, is_max=True)]))
 
         results.sort(key=lambda c: c.score)
