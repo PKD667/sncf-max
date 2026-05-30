@@ -57,6 +57,12 @@ def index() -> str:
     return template.read_text()
 
 
+@app.route("/api/stations")
+def api_stations():
+    """Return known station aliases."""
+    return jsonify(STATIONS)
+
+
 @app.route("/api/train_stops")
 def api_train_stops():
     """Return all stops for a given train on a date."""
