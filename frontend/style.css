@@ -5,7 +5,7 @@ body{font:12px/1.6 'Fira Mono','Liberation Mono',monospace;background:var(--bg);
 #map{width:50%;height:100%;border-right:2px solid var(--border)}
 #side{width:50%;height:100%;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
 h1{font:18px 'Crimson Text',serif;color:var(--hi);border-bottom:1px solid var(--border);padding-bottom:4px;display:flex;align-items:center;gap:10px}
-h1 img{height:16px;opacity:0.6}
+h1 img{height:16px}
 h1 span{color:var(--dim);font-size:13px}
 .box{border:1px solid var(--border);padding:10px}
 .box h2{font:12px 'Fira Mono',monospace;font-weight:bold;color:var(--hi);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
