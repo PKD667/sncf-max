@@ -6,239 +6,213 @@
 <title>TGV MAX</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css">
 <style>
-  :root { --bg: #111; --fg: #aaa; --hi: #fff; --dim: #555; --border: #333;
-          --g: #0a0; --r: #c33; --b: #38d; --y: #eb4; }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font: 11px/1.5 'Courier New', monospace; background: var(--bg); color: var(--fg);
-         height: 100vh; display: flex; }
-  #map { width: 50%; height: 100%; border-right: 2px solid var(--border); }
-  #side { width: 50%; height: 100%; overflow-y: auto; padding: 12px;
-          display: flex; flex-direction: column; gap: 8px; }
-  h1 { font-size: 13px; font-weight: bold; color: var(--hi); text-transform: uppercase;
-       letter-spacing: 2px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
-  h1 span { color: var(--dim); }
-  .box { border: 1px solid var(--border); padding: 8px; }
-  .box h2 { font-size: 11px; font-weight: bold; color: var(--hi); text-transform: uppercase;
-            letter-spacing: 1px; margin-bottom: 4px; }
-  .row { display: flex; gap: 4px; flex-wrap: wrap; }
-  select, input, button { font: 10px/1.5 'Courier New', monospace; background: #000;
-                          color: var(--hi); border: 1px solid var(--border); padding: 3px 6px; }
-  select { min-width: 110px; }
-  input[type=date] { min-width: 100px; }
-  button { cursor: pointer; text-transform: uppercase; letter-spacing: 1px; }
-  button:hover { background: #222; }
-  button:disabled { opacity: 0.3; cursor: default; }
-  button.prim { border-color: var(--b); color: var(--b); }
-  .tag { display: inline-block; padding: 1px 6px; font-size: 10px;
-         text-transform: uppercase; letter-spacing: 1px; }
-  .tag-m { color: var(--g); border: 1px solid var(--g); }
-  .tag-p { color: var(--y); border: 1px solid var(--y); }
-  .tag-n { color: var(--r); border: 1px solid var(--r); }
-  .stat { color: var(--hi); }
-  .stat-d { color: var(--dim); }
-  .tr { display: grid; grid-template-columns: 110px 50px 1fr 80px; gap: 4px; padding: 2px 0;
-        border-bottom: 1px solid #1a1a1a; font-size: 10px; align-items: center; }
-  .tr:last-child { border: none; }
-  .t-time { color: var(--hi); }
-  .t-route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .emp { color: var(--dim); font-style: italic; padding: 4px 0; }
-  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--dim);
-          border-top-color: var(--b); border-radius: 50%; animation: s 0.5s linear infinite; vertical-align: middle; margin-right: 4px; }
-  @keyframes s { to { transform: rotate(360deg); } }
-  @media (max-width: 700px) { body { flex-direction: column; } #map, #side { width: 100%; height: 50%; } }
+  :root { --bg:#111;--fg:#aaa;--hi:#fff;--dim:#555;--border:#333;--g:#0a0;--r:#c33;--b:#38d;--y:#eb4; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font:11px/1.5 monospace;background:var(--bg);color:var(--fg);height:100vh;display:flex}
+  #map{width:50%;height:100%;border-right:2px solid var(--border)}
+  #side{width:50%;height:100%;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+  h1{font-size:13px;font-weight:bold;color:var(--hi);text-transform:uppercase;letter-spacing:2px;border-bottom:1px solid var(--border);padding-bottom:4px}
+  h1 span{color:var(--dim)}
+  .box{border:1px solid var(--border);padding:8px}
+  .box h2{font-size:11px;font-weight:bold;color:var(--hi);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+  .row{display:flex;gap:4px;flex-wrap:wrap}
+  select,input,button{font:10px/1.5 monospace;background:#000;color:var(--hi);border:1px solid var(--border);padding:3px 6px}
+  select{min-width:110px} input[type=date]{min-width:100px}
+  button{cursor:pointer;text-transform:uppercase;letter-spacing:1px}
+  button:hover{background:#222} button:disabled{opacity:.3}
+  button.prim{border-color:var(--b);color:var(--b)}
+  .tag{display:inline-block;padding:1px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1px}
+  .tag-m{color:var(--g);border:1px solid var(--g)}
+  .tag-p{color:var(--y);border:1px solid var(--y)}
+  .tr{display:grid;grid-template-columns:110px 50px 1fr 80px;gap:4px;padding:2px 0;border-bottom:1px solid #1a1a1a;font-size:10px;align-items:center}
+  .tr:last-child{border:none} .t-time{color:var(--hi);white-space:nowrap}
+  .t-route{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .e{color:var(--dim);font-style:italic;padding:4px 0}
+  .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--dim);border-top-color:var(--b);border-radius:50%;animation:S .5s linear infinite;vertical-align:middle;margin-right:4px}
+  @keyframes S{to{transform:rotate(360deg)}}
+  @media(max-width:700px){body{flex-direction:column}#map,#side{width:100%;height:50%}}
 </style>
 </head>
 <body>
 <div id="map"></div>
 <div id="side">
-  <h1>TGV <span>//</span> MAX</h1>
-
-  <div class="box">
-    <h2>SEARCH</h2>
-    <div class="row">
-      <select id="o"><option disabled>...</option></select>
-      <select id="d"><option disabled>...</option></select>
-      <input type="date" id="dt">
-      <button id="sb" onclick="search()" class="prim">GO</button>
-      <button id="hb" onclick="hunt()">HUNT</button>
-    </div>
-    <div class="row" style="margin-top:3px">
-      <span id="st" style="font-size:10px;color:var(--dim)"></span>
-    </div>
-  </div>
-
-  <div class="box" id="sum" style="display:none">
-    <h2>SUMMARY</h2>
-    <div id="sc"></div>
-  </div>
-  <div class="box" id="freebox" style="display:none">
-    <h2>DIRECT <span style="color:var(--g)">MAX</span> <span id="fc" style="color:var(--dim)"></span></h2>
-    <div id="fl"></div>
-  </div>
-  <div class="box" id="decompbox" style="display:none">
-    <h2>DECOMPOSED <span style="color:var(--g)">ALL-MAX</span> <span id="dc" style="color:var(--dim)"></span></h2>
-    <div id="dl"></div>
-  </div>
-  <div class="box" id="paidbox" style="display:none">
-    <h2>PAID <span style="color:var(--y)">FALLBACK</span> <span id="pc" style="color:var(--dim)"></span></h2>
-    <div id="pl"></div>
-  </div>
+<h1>TGV <span>//</span> MAX</h1>
+<div class="box">
+<h2>SEARCH</h2>
+<form onsubmit="search();return false">
+<div class="row">
+<select name="origin"></select>
+<select name="destination"></select>
+<input type="date" name="date">
+<button type="submit" class="prim">GO</button>
+<button type="button" onclick="hunt()">HUNT</button>
 </div>
-
-<script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js"></script>
+</form>
+<div class="row" style="margin-top:3px"><span id="st" style="font-size:10px;color:var(--dim)"></span></div>
+</div>
+<div class="box" id="sum" style="display:none"><h2>SUMMARY</h2><div id="sc"></div></div>
+<div class="box" id="freebox" style="display:none"><h2>DIRECT <span style="color:var(--g)">MAX</span> <span id="fc" style="color:var(--dim)"></span></h2><div id="fl"></div></div>
+<div class="box" id="decompbox" style="display:none"><h2>DECOMP <span style="color:var(--g)">ALL-MAX</span> <span id="dc" style="color:var(--dim)"></span></h2><div id="dl"></div></div>
+<div class="box" id="paidbox" style="display:none"><h2>PAID <span style="color:var(--y)">FALLBACK</span> <span id="pc" style="color:var(--dim)"></span></h2><div id="pl"></div></div>
+</div>
 <script>
-// state
-var STATIONS = {}, COORDS = {}, aliasList = [];
-var map, markers=[];
-
-// station coords
-var C = {
-  "PARIS (intramuros)":[48.86,2.35],"PARIS GARE DE LYON":[48.84,2.37],"PARIS MONTPARNASSE 1 ET 2":[48.84,2.32],
-  "PARIS NORD":[48.88,2.36],"PARIS EST":[48.88,2.36],"LYON (intramuros)":[45.76,4.84],
-  "LYON PART DIEU":[45.76,4.86],"MARSEILLE ST CHARLES":[43.30,5.38],"BORDEAUX ST JEAN":[44.83,-0.56],
-  "LILLE FLANDRES":[50.64,3.07],"LILLE EUROPE":[50.64,3.08],"STRASBOURG":[48.59,7.73],
-  "NANTES":[47.22,-1.54],"RENNES":[48.11,-1.67],"TOULOUSE MATABIAU":[43.61,1.45],
-  "MONTPELLIER ST ROCH":[43.60,3.88],"NICE VILLE":[43.70,7.26],"AVIGNON TGV":[43.92,4.79],
-  "AIX EN PROVENCE TGV":[43.46,5.32],"VALENCE TGV":[44.99,4.98],"DIJON VILLE":[47.32,5.04],
-  "GRENOBLE":[45.19,5.71],"ST PIERRE DES CORPS":[47.39,0.72],"LE MANS":[47.99,0.19],
-  "ANGERS ST LAUD":[47.47,-0.56],"POITIERS":[46.58,0.35],"METZ VILLE":[49.11,6.18],
-  "NANCY":[48.69,6.17],"REIMS":[49.26,4.03],"LE CREUSOT MONTCEAU MONTCHANIN":[46.81,4.44],
-  "MACON LOCHE":[46.30,4.82],"CHAMBERY CHALLES LES EAUX":[45.57,5.92],
-  "ARRAS":[50.29,2.78],"DOUAI":[50.37,3.08],"BREST":[48.39,-4.48],
-  "Marne-la-Vallee Chessy":[48.87,2.78],"Lyon Saint-Exupery TGV":[45.72,5.08],
-  "Aeroport Charles de Gaulle 2 TGV":[48.99,2.57],"Massy TGV":[48.73,2.26],
-  "PERPIGNAN":[42.70,2.88],"NIMES":[43.83,4.37],"PAU":[43.29,-0.37],"BAYONNE":[43.50,-1.47]
+var STATIONS={},ALIASES=[],map=null,routeLayer=null;
+var COORDS={};
+var C={
+"PARIS (intramuros)":[48.86,2.35],"PARIS GARE DE LYON":[48.84,2.37],"PARIS MONTPARNASSE 1 ET 2":[48.84,2.32],
+"PARIS NORD":[48.88,2.36],"PARIS EST":[48.88,2.36],"LYON (intramuros)":[45.76,4.84],
+"LYON PART DIEU":[45.76,4.86],"MARSEILLE ST CHARLES":[43.30,5.38],"BORDEAUX ST JEAN":[44.83,-0.56],
+"LILLE FLANDRES":[50.64,3.07],"LILLE EUROPE":[50.64,3.08],"STRASBOURG":[48.59,7.73],
+"NANTES":[47.22,-1.54],"RENNES":[48.11,-1.67],"TOULOUSE MATABIAU":[43.61,1.45],
+"MONTPELLIER ST ROCH":[43.60,3.88],"NICE VILLE":[43.70,7.26],"AVIGNON TGV":[43.92,4.79],
+"AIX EN PROVENCE TGV":[43.46,5.32],"VALENCE TGV":[44.99,4.98],"DIJON VILLE":[47.32,5.04],
+"GRENOBLE":[45.19,5.71],"ST PIERRE DES CORPS":[47.39,0.72],"LE MANS":[47.99,0.19],
+"ANGERS ST LAUD":[47.47,-0.56],"POITIERS":[46.58,0.35],"METZ VILLE":[49.11,6.18],
+"NANCY":[48.69,6.17],"CHAMPAGNE ARDENNE TGV":[49.26,4.03],
+"LE CREUSOT MONTCEAU MONTCHANIN":[46.81,4.44],"MACON LOCHE":[46.30,4.82],
+"CHAMBERY CHALLES LES EAUX":[45.57,5.92],"ARRAS":[50.29,2.78],"DOUAI":[50.37,3.08],
+"BREST":[48.39,-4.48],"Marne-la-Vallee Chessy":[48.87,2.78],
+"Lyon Saint-Exupery TGV":[45.72,5.08],"Aeroport Charles de Gaulle 2 TGV":[48.99,2.57],
+"Massy TGV":[48.73,2.26],"PERPIGNAN":[42.70,2.88],"NIMES":[43.83,4.37],"PAU":[43.29,-0.37],
+"BAYONNE":[43.50,-1.47],"LA ROCHELLE":[46.15,-1.15],"MULHOUSE":[47.75,7.34],"COLMAR":[48.07,7.36],
+"CALAIS":[50.95,1.85],"BOULOGNE":[50.73,1.61],"ROUEN":[49.45,1.09],"LE HAVRE":[49.49,0.11],
+"CAEN":[49.18,-0.35],"ST MALO":[48.65,-2.00],"VANNES":[47.66,-2.76],"LORIENT":[47.75,-3.36],
+"QUIMPER":[48.00,-4.09],"ANGOULEME":[45.65,0.16],"TOURS":[47.39,0.69],
+"BESANCON FRANCHE COMTE TGV":[47.31,5.95],"BELFORT MONTBELIARD TGV":[47.59,6.89],
+"BLOIS":[47.59,1.33],"ORLEANS":[47.91,1.91],"BEZIERS":[43.34,3.22],"SETE":[43.41,3.70],
+"NARBONNE":[43.19,3.01],"BIARRITZ":[43.46,-1.54],"DAX":[43.72,-1.07],
+"Aeroport Charles de Gaulle 2 TGV":[48.99,2.57]
 };
 
-// init
-async function init(){
-  map = L.map('map').setView([46.5,2.5],6);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
-    attribution:'&copy; CARTO'
-  }).addTo(map);
+// normalise station names for coordinate lookup
+function latlng(station){
+  // try exact
+  if(C[station]) return C[station];
+  // try substring
+  var u = station.toUpperCase();
+  for(var k in C){ if(u.indexOf(k.toUpperCase())!==-1 || k.toUpperCase().indexOf(u)!==-1) return C[k]; }
+  // nearest from name prefix
+  return null;
+}
 
-  let r = await fetch('/api/stations');
-  let s = await r.json();
-  aliasList = Object.keys(s).sort();
-  for(var a in s){ STATIONS[a]=s[a]; }
-
-  let pop = function(id,sel){
-    let e = document.getElementById(id);
-    e.innerHTML = '<option value="">--</option>';
-    aliasList.forEach(function(a){
-      let o = document.createElement('option');
-      o.value = a; o.text = a + '  ['+trunc(STATIONS[a],20)+']';
-      if(a===sel) o.selected = true;
+// --- init ---
+fetch('/api/stations').then(function(r){return r.json()}).then(function(s){
+  ALIASES = Object.keys(s).sort();
+  STATIONS = s;
+  function pop(sel,def){
+    var e = document.querySelector('select[name='+sel+']');
+    ALIASES.forEach(function(a){
+      var o = document.createElement('option');
+      o.value = a; o.text = a + ' [' + trunc(s[a],20) + ']';
+      if(a===def) o.selected = true;
       e.appendChild(o);
     });
-  };
-  pop('o','paris'); pop('d','lyon');
-  document.getElementById('dt').value = ymd(new Date(Date.now()+86400000));
+  }
+  pop('origin','paris'); pop('destination','lyon');
+  document.querySelector('input[name=date]').value = ymd(new Date(Date.now()+7*86400000)); // +7 days for best results
+}).catch(function(e){ console.error('station load failed',e); });
 
-  // add map markers
-  for(var a in C){ var m = L.circleMarker(C[a],{radius:3,fillColor:'#38d',color:'#fff',weight:1,fillOpacity:0.8})
-    .bindTooltip(trunc(a,30)); markers.push(m); m.addTo(map); }
+// --- map (try/catch so it works without CDN) ---
+try {
+  setTimeout(function(){
+    var L = window.L; if(!L) return;
+    map = L.map('map').setView([46.5,2.5],6);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'&copy;CARTO'}).addTo(map);
+    for(var k in C){ L.circleMarker(C[k],{radius:3,fillColor:'#38d',color:'#fff',weight:1,fillOpacity:0.7}).bindTooltip(trunc(k,25)).addTo(map); }
+    routeLayer = L.layerGroup().addTo(map);
+  },800);
+}catch(e){console.log('map disabled');}
+
+// --- helpers ---
+function ymd(d){return d.toISOString().slice(0,10)}
+function trunc(s,n){return s&&s.length>n?s.slice(0,n)+'...':(s||'')}
+function show(id){document.getElementById(id).style.display='block'}
+function hide(id){document.getElementById(id).style.display='none'}
+function loading(on,msg){document.getElementById('st').innerHTML=on?'<span class=spin></span>'+msg:''}
+
+// --- draw route on map ---
+function drawRoute(originName, destName, trips){
+  if(!map||!routeLayer) return;
+  routeLayer.clearLayers();
+  var o = latlng(originName), d = latlng(destName);
+  if(o&&d){
+    var line = L.polyline([o,d],{color:'#38d',weight:2,dashArray:'5 8',opacity:0.8});
+    routeLayer.addLayer(line);
+    routeLayer.addLayer(L.circleMarker(o,{radius:6,fillColor:'#0a0',color:'#fff',weight:2,fillOpacity:1}));
+    routeLayer.addLayer(L.circleMarker(d,{radius:6,fillColor:'#38d',color:'#fff',weight:2,fillOpacity:1}));
+  }
+  // also show destination stations from broadcast
+  if(trips&&trips.length){
+    trips.forEach(function(t){
+      var dd = latlng(t.destination);
+      if(dd) routeLayer.addLayer(L.circleMarker(dd,{radius:4,fillColor:'#38d',color:'#fff',weight:1,fillOpacity:0.5}));
+    });
+  }
+  if(o&&d){
+    var pts = [o,d];
+    if(trips) trips.forEach(function(t){var dd=latlng(t.destination);if(dd)pts.push(dd);});
+    map.fitBounds(L.latLngBounds(pts),{padding:[40,40],maxZoom:9});
+  }
 }
-function ymd(d){ return d.toISOString().slice(0,10); }
-function trunc(s,n){ return s&&s.length>n?s.slice(0,n)+'...':(s||''); }
 
-// search
-async function search(){
-  var o = document.getElementById('o').value, d = document.getElementById('d').value;
+// --- search ---
+function search(){
+  var o = document.querySelector('select[name=origin]').value;
+  var d = document.querySelector('select[name=destination]').value;
   if(!o||!d) return;
   loading(true,'searching...');
   var p = new URLSearchParams({origin:o,destination:d,decompose:'1'});
-  var dv = document.getElementById('dt').value; if(dv) p.set('date',dv);
-  var r = await fetch('/api/search?'+p);
-  loading(false); render(await r.json());
+  var dv = document.querySelector('input[name=date]').value;
+  if(dv) p.set('date',dv);
+  fetch('/api/search?'+p).then(function(r){return r.json()}).then(function(data){
+    loading(false);
+    render(data);
+    drawRoute(data.origin,data.destination,data.direct_free);
+  }).catch(function(){loading(false)});
 }
-async function hunt(){
-  var o = document.getElementById('o').value; if(!o) return;
-  loading(true,'hunting (broadcast)...');
+
+function hunt(){
+  var o = document.querySelector('select[name=origin]').value; if(!o) return;
+  loading(true,'hunting...');
   var p = new URLSearchParams({origin:o});
-  var dv = document.getElementById('dt').value; if(dv) p.set('date',dv);
-  var r = await fetch('/api/broadcast?'+p);
-  loading(false);
-  var trips = await r.json();
-  renderHunt(o,trips);
+  var dv = document.querySelector('input[name=date]').value; if(dv) p.set('date',dv);
+  fetch('/api/broadcast?'+p).then(function(r){return r.json()}).then(function(trips){
+    loading(false); renderHunt(o,trips); drawRoute(o,null,trips);
+  }).catch(function(){loading(false)});
 }
 
-function loading(on,msg){
-  document.getElementById('st').innerHTML = on ? '<span class="spin"></span>'+msg : '';
-  document.getElementById('sb').disabled = on;
-  document.getElementById('hb').disabled = on;
-}
-
-// render search
+// --- render ---
 function render(d){
-  show('sum'); show('freebox'); show('paidbox');
-  document.getElementById('sc').innerHTML =
-    '<span class="tag tag-m">MAX direct: '+d.count_direct_free+'</span> '+
-    '<span class="tag tag-m">MAX decomp: '+d.count_decomposed_free+'</span> '+
-    '<span class="tag tag-p">paid: '+d.count_direct_paid+'</span>';
-
-  document.getElementById('fc').textContent = '('+d.direct_free.length+')';
-  document.getElementById('fl').innerHTML = d.direct_free.length ? d.direct_free.map(trHTML).join('') : '<div class="emp">none</div>';
-
-  var maxOnly = d.decompositions.filter(function(c){return c.is_fully_max;});
-  if(maxOnly.length){
-    show('decompbox');
-    document.getElementById('dc').textContent = '('+maxOnly.length+'/'+d.decompositions.length+')';
-    document.getElementById('dl').innerHTML = maxOnly.slice(0,20).map(dcHTML).join('');
-    if(maxOnly.length>20) document.getElementById('dl').innerHTML += '<div class="emp">+ '+(maxOnly.length-20)+' more</div>';
-  } else { hide('decompbox'); }
-
-  document.getElementById('pc').textContent = '('+d.direct_paid.length+')';
-  document.getElementById('pl').innerHTML = d.direct_paid.length ? d.direct_paid.slice(0,8).map(trHTML).join('')
-    + (d.direct_paid.length>8 ? '<div class="emp">+ '+(d.direct_paid.length-8)+' more</div>' : '') : '<div class="emp">none</div>';
-
-  updateMap(d.origin, d.destination);
+  show('sum');show('freebox');show('paidbox');
+  document.getElementById('sc').innerHTML=
+    '<span class=\"tag tag-m\">MAX direct: '+d.count_direct_free+'</span> '+
+    '<span class=\"tag tag-m\">MAX decomp: '+d.count_decomposed_free+'</span> '+
+    '<span class=\"tag tag-p\">paid: '+d.count_direct_paid+'</span>';
+  document.getElementById('fc').textContent='('+d.direct_free.length+')';
+  document.getElementById('fl').innerHTML=d.direct_free.length?d.direct_free.map(trH).join(''):'<div class=e>none</div>';
+  var mx = d.decompositions.filter(function(c){return c.is_fully_max;});
+  if(mx.length){show('decompbox');
+    document.getElementById('dc').textContent='('+mx.length+'/'+d.decompositions.length+')';
+    document.getElementById('dl').innerHTML=mx.slice(0,20).map(dcH).join('');
+    if(mx.length>20)document.getElementById('dl').innerHTML+='<div class=e>+ '+(mx.length-20)+' more</div>';
+  }else{hide('decompbox')}
+  document.getElementById('pc').textContent='('+d.direct_paid.length+')';
+  document.getElementById('pl').innerHTML=d.direct_paid.length?d.direct_paid.slice(0,8).map(trH).join('')+(d.direct_paid.length>8?'<div class=e>+ '+(d.direct_paid.length-8)+' more</div>':''):'<div class=e>none</div>';
 }
 
-function renderHunt(origin, trips){
-  show('sum'); show('freebox'); hide('decompbox'); hide('paidbox');
-  document.getElementById('sc').innerHTML = '<span class="tag tag-m">'+trips.length+' free from '+origin+'</span>';
-  document.getElementById('fc').textContent = '('+trips.length+')';
-  // group by dest
-  var g = {}; trips.forEach(function(t){ var d = t.destination; if(!g[d]) g[d]=[]; g[d].push(t); });
-  var h = '';
-  for(var d in g){
-    h += '<div style="font-weight:bold;color:var(--hi);margin-top:4px;">'+d+' ('+g[d].length+')</div>';
-    h += g[d].slice(0,4).map(trHTML).join('');
-    if(g[d].length>4) h += '<div class="emp">+ '+(g[d].length-4)+' more</div>';
-  }
-  document.getElementById('fl').innerHTML = h || '<div class="emp">none</div>';
-  updateMap(origin, null);
+function renderHunt(origin,trips){
+  show('sum');show('freebox');hide('decompbox');hide('paidbox');
+  document.getElementById('sc').innerHTML='<span class=\"tag tag-m\">'+trips.length+' free from '+origin+'</span>';
+  document.getElementById('fc').textContent='('+trips.length+')';
+  var g={};trips.forEach(function(t){var d=t.destination;if(!g[d])g[d]=[];g[d].push(t);});
+  var h='';
+  for(var d in g){h+='<div style=\"font-weight:bold;color:var(--hi);margin-top:4px\">'+d+' ('+g[d].length+')</div>';h+=g[d].slice(0,4).map(trH).join('');if(g[d].length>4)h+='<div class=e>+ '+(g[d].length-4)+' more</div>';}
+  document.getElementById('fl').innerHTML=h||'<div class=e>none</div>';
 }
 
-function trHTML(t){
-  return '<div class="tr">'+
-    '<span class="t-time">'+t.departure_time+' &rarr; '+t.arrival_time+'</span>'+
-    '<span class="tag tag-m">'+t.train_number+'</span>'+
-    '<span class="t-route">'+trunc(t.origin,18)+' &rarr; '+trunc(t.destination,18)+'</span>'+
-    '<span class="stat-d">'+t.duration_min+'m</span>'+
-    '</div>';
-}
-function dcHTML(c){
-  var legs = c.legs.map(function(l){return trunc(l.origin,10)+'('+l.departure_time+')';}).join(' &rarr; ');
-  legs += ' &rarr; '+trunc(c.destination,10)+'('+c.arrival_time+')';
-  return '<div class="tr">'+
-    '<span class="t-time">'+c.departure_time+' &rarr; '+c.arrival_time+'</span>'+
-    '<span class="tag tag-m">'+c.max_legs+'M</span>'+
-    '<span class="t-route">'+legs+'</span>'+
-    '<span class="stat-d">'+c.total_duration_min+'m</span>'+
-    '</div>';
-}
-
-function updateMap(o,d){
-  var pts = [];
-  if(C[o]) pts.push(C[o]); if(d && C[d]) pts.push(C[d]);
-  if(pts.length) map.fitBounds(L.latLngBounds(pts),{padding:[30,30],maxZoom:9});
-}
-function show(id){ document.getElementById(id).style.display='block'; }
-function hide(id){ document.getElementById(id).style.display='none'; }
-
-init();
+function trH(t){return '<div class=tr><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span><span class=\"tag tag-m\">'+t.train_number+'</span><span class=t-route title=\"'+t.origin+' -> '+t.destination+'\">'+trunc(t.origin,18)+' &rarr; '+trunc(t.destination,18)+'</span><span class=stat-d>'+t.duration_min+'m</span></div>'}
+function dcH(c){var L=c.legs.map(function(l){return trunc(l.origin,9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(c.destination,9)+'('+c.arrival_time+')';return '<div class=tr><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class=\"tag tag-m\">'+c.max_legs+'M</span><span class=t-route>'+L+'</span><span class=stat-d>'+c.total_duration_min+'m</span></div>'}
 </script>
+<script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js" onerror="console.log('map CDN unavailable')"></script>
 </body>
 </html>
