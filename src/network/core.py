@@ -148,11 +148,13 @@ def search(
         direct_paid=paid,
     )
 
-    # -- step 2: decompose into all-MAX multi-leg combos --------------------
+    # -- step 2: decompose into multi-leg combos (MAX + paid fallback) -----
     if decompose:
         decomposer = TripDecomposer(config=cfg)
-        result.decompositions = decomposer.find_max_only_combos(
-            origin=origin_full, destination=dest_full, trip_date=trip_date
+        # always include paid — shows everything even if no all-MAX exists
+        result.decompositions = decomposer.find_alternatives(
+            origin=origin_full, destination=dest_full, trip_date=trip_date,
+            include_paid=True,
         )
 
     return result

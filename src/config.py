@@ -209,6 +209,8 @@ STATIONS = {
     "lyon_aeroport": "Lyon Saint-Exupéry TGV",
     "massy": "Massy TGV",
     "valence": "Valence TGV Rhône-Alpes Sud",
+    "creusot": "LE CREUSOT MONTCEAU MONTCHANIN",
+    "macon": "MACON LOCHE",
 }
 
 

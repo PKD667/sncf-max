@@ -51,12 +51,19 @@ def resolve(name: str) -> Optional[str]:
     """Map any station name (API, alias, etc.) to a graph node."""
     from config import get_station_name
 
+    # Try direct mapping first (API name -> graph node)
+    mapped = _alias_api_to_graph(name)
+    if mapped is not None:
+        return mapped
+
+    # Try via our config aliases (paris -> API name -> graph node)
     full = get_station_name(name)
     if full != name:
         mapped = _alias_api_to_graph(full)
         if mapped is not None:
             return mapped
 
+    # Direct graph lookup
     upper = name.upper().strip()
     m = _normalize()
     if upper in m:
@@ -67,8 +74,40 @@ def resolve(name: str) -> Optional[str]:
     return None
 
 
+def graph_to_api(graph_name: str) -> str:
+    """Map a NETEX graph node name back to an API-compatible station name."""
+    # Try reverse of _mapping first
+    for api_name, gname in _mapping().items():
+        if graph_name.upper() == gname.upper():
+            return api_name
+    # Try against config STATIONS
+    from config import STATIONS
+    upper = graph_name.upper()
+    for alias, full_name in STATIONS.items():
+        if upper == full_name.upper():
+            return full_name
+    # Try substring match in STATIONS
+    for alias, full_name in STATIONS.items():
+        if upper in full_name.upper() or full_name.upper() in upper:
+            return full_name
+    # Fallback: return as-is — the API might still understand it
+    return graph_name
+
+
 def _alias_api_to_graph(api_name: str) -> Optional[str]:
-    mapping: Dict[str, str] = {
+    """Map API station name to graph node."""
+    m = _mapping()
+    if api_name in m:
+        return m[api_name]
+    for k, v in m.items():
+        if k.upper() in api_name.upper() or api_name.upper() in k.upper():
+            return v
+    return None
+
+
+def _mapping() -> Dict[str, str]:
+    """API name -> graph node name mapping."""
+    return {
         "PARIS (intramuros)": "Paris Gare de Lyon Hall 1 - 2",
         "PARIS GARE DE LYON": "Paris Gare de Lyon Hall 1 - 2",
         "PARIS MONTPARNASSE 1 ET 2": "Paris Montparnasse Hall 1 - 2",
@@ -92,6 +131,9 @@ def _alias_api_to_graph(api_name: str) -> Optional[str]:
         "NANCY": "Nancy",
         "METZ VILLE": "Metz",
         "REIMS": "Champagne-Ardenne TGV",
+        "LE CREUSOT MONTCEAU MONTCHANIN": "Le Creusot Montceau Montchanin",
+        "MACON LOCHE": "Macon Loche",
+        "VALENCE TGV": "Valence TGV Rhône-Alpes Sud",
         "LE MANS": "Le Mans",
         "POITIERS": "Poitiers",
         "PERPIGNAN": "Perpignan",
