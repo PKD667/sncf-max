@@ -190,12 +190,15 @@ function render(d){
     '<span class=\"tag tag-p\">paid: '+d.count_direct_paid+'</span>';
   document.getElementById('fc').textContent='('+d.direct_free.length+')';
   document.getElementById('fl').innerHTML=d.direct_free.length?d.direct_free.map(trH).join(''):'<div class=e>none</div>';
-  var mx = d.decompositions.filter(function(c){return c.is_fully_max;});
-  if(mx.length){show('decompbox');
-    document.getElementById('dc').textContent='('+mx.length+'/'+d.decompositions.length+')';
-    document.getElementById('dl').innerHTML=mx.slice(0,20).map(dcH).join('');
-    if(mx.length>20)document.getElementById('dl').innerHTML+='<div class=e>+ '+(mx.length-20)+' more</div>';
+
+  // always show decomposition — even paid fallbacks
+  if(d.decompositions.length){
+    show('decompbox');
+    document.getElementById('dc').textContent='('+d.decompositions.length+')';
+    document.getElementById('dl').innerHTML=d.decompositions.slice(0,30).map(dcH).join('');
+    if(d.decompositions.length>30)document.getElementById('dl').innerHTML+='<div class=e>+ '+(d.decompositions.length-30)+' more</div>';
   }else{hide('decompbox')}
+
   document.getElementById('pc').textContent='('+d.direct_paid.length+')';
   document.getElementById('pl').innerHTML=d.direct_paid.length?d.direct_paid.slice(0,8).map(trH).join('')+(d.direct_paid.length>8?'<div class=e>+ '+(d.direct_paid.length-8)+' more</div>':''):'<div class=e>none</div>';
 }
@@ -211,7 +214,7 @@ function renderHunt(origin,trips){
 }
 
 function trH(t){return '<div class=tr><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span><span class=\"tag tag-m\">'+t.train_number+'</span><span class=t-route title=\"'+t.origin+' -> '+t.destination+'\">'+trunc(t.origin,18)+' &rarr; '+trunc(t.destination,18)+'</span><span class=stat-d>'+t.duration_min+'m</span></div>'}
-function dcH(c){var L=c.legs.map(function(l){return trunc(l.origin,9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(c.destination,9)+'('+c.arrival_time+')';return '<div class=tr><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class=\"tag tag-m\">'+c.max_legs+'M</span><span class=t-route>'+L+'</span><span class=stat-d>'+c.total_duration_min+'m</span></div>'}
+function dcH(c){var L=c.legs.map(function(l){return trunc(l.origin,9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(c.destination,9)+'('+c.arrival_time+')';var cls=c.is_fully_max?'tag-m':'tag-p';var label=c.is_fully_max?(c.max_legs+'M'):(c.max_legs+'M+'+c.paid_legs+'P');return '<div class=tr><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class=\"tag '+cls+'\">'+label+'</span><span class=t-route>'+L+'</span><span class=stat-d>'+c.total_duration_min+'m</span></div>'}
 </script>
 <script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js" onerror="console.log('map CDN unavailable')"></script>
 </body>

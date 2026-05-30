@@ -19,7 +19,7 @@ import logging
 from models import Trip, Station
 from config import SNCFConfig, default_config, get_station_name
 from network.client import SNCFMaxClient
-from network.graph import resolve, neighbors, find_paths
+from network.graph import resolve, neighbors, find_paths, graph_to_api
 
 logger = logging.getLogger(__name__)
 
@@ -185,8 +185,8 @@ class TripDecomposer:
         o_node = resolve(origin_full) or origin_full
         d_node = resolve(dest_full) or dest_full
 
-        # 1. Direct trips
-        direct = self._fetch(o_node, d_node, trip_date, only_max=not include_paid)
+        # 1. Direct trips — use API names (origin_full/dest_full), not graph names
+        direct = self._fetch(origin_full, dest_full, trip_date, only_max=not include_paid)
         for t in direct:
             if departure_after and t.departure_time < departure_after:
                 continue
@@ -194,7 +194,7 @@ class TripDecomposer:
                 continue
             alternatives.append(CompositeTrip(legs=[TripLeg(trip=t, is_max=t.is_free)]))
 
-        # 2. Multi-hop via graph BFS
+        # 2. Multi-hop via graph BFS — convert graph nodes to API names
         paths = find_paths(o_node, d_node, self.MAX_HOPS)
         multi = [p for p in paths if len(p) >= 3]  # at least 2 legs
 
@@ -206,9 +206,11 @@ class TripDecomposer:
 
             def _eval(path: List[str]) -> List[CompositeTrip]:
                 local: List[CompositeTrip] = []
+                # Convert graph node names to API station names
+                api_path = [graph_to_api(node) for node in path]
                 legs_data = [
-                    self._fetch(path[i], path[i+1], trip_date, only_max=not _paid)
-                    for i in range(len(path) - 1)
+                    self._fetch(api_path[i], api_path[i+1], trip_date, only_max=not _paid)
+                    for i in range(len(api_path) - 1)
                 ]
                 if not all(legs_data):
                     return local
@@ -249,69 +251,7 @@ class TripDecomposer:
         return unique
 
     def find_max_only_combos(self, origin: str, destination: str, trip_date: date) -> List[CompositeTrip]:
-        """Brute-force all-MAX decomposition.
-
-        Strategy: 
-        1. Broadcast from origin -> ALL stations (parallel)
-        2. For every station S that has a free trip from origin,
-           check S -> destination for free trips
-        3. Accept any connection where arrival < next departure
-           (no min/max wait enforced — find even the weird ones)
-        """
-        origin_full = get_station_name(origin)
-        dest_full = get_station_name(destination)
-
-        # --- Step 1: broadcast from origin (parallel, all destinations) ---
-        from network.finder import _get_scan_stations
-        stations = _get_scan_stations()
-        destinations = [s for s in stations if s != origin_full]
-
-        free_from_origin: Dict[str, List[Trip]] = {}
-        destinations = list(self._client.search_all_to_destinations(
-            origin=origin_full, destinations=destinations[:60],
-            trip_date=trip_date, only_available=True, workers=self._workers
-        ).items())
-
-        # --- Step 2: for every reachable station, check it->dest ---
-        combos: List[CompositeTrip] = []
-        seen: Set[Tuple[str, str]] = set()
-
-        def _check(inter_station: str, leg1_trips: List[Trip]):
-            local: List[CompositeTrip] = []
-            try:
-                free_from_inter, _ = self._client.search_all_trips(
-                    origin=inter_station, destination=dest_full, trip_date=trip_date)
-                leg2_free = [t for t in free_from_inter if t.is_free]
-            except Exception:
-                return local
-
-            for t1 in leg1_trips:
-                if not t1.is_free:
-                    continue
-                for t2 in leg2_free:
-                    if t1.arrival_datetime >= t2.departure_datetime:
-                        continue
-                    key = (t1.trip_key, t2.trip_key)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    local.append(CompositeTrip(legs=[
-                        TripLeg(trip=t1, is_max=True),
-                        TripLeg(trip=t2, is_max=True),
-                    ]))
-            return local
-
-        with ThreadPoolExecutor(max_workers=self._workers) as ex:
-            futures = {
-                ex.submit(_check, inter, trips): inter
-                for inter, trips in free_from_origin.items()
-                if inter != origin_full
-            }
-            for future in as_completed(futures):
-                combos.extend(future.result())
-
-        combos.sort(key=lambda c: c.score)
-        return combos
+        return self.find_alternatives(origin, destination, trip_date, include_paid=False)
 
     def find_best_alternative(self, origin: str, destination: str, trip_date: date,
                               prefer_fully_max: bool = True) -> Optional[CompositeTrip]:
