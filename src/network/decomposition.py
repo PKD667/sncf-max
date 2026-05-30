@@ -263,6 +263,58 @@ class TripDecomposer:
                 return max_alts[0]
         return alts[0] if alts else None
 
+    def find_descentres(self, origin: str, target: str, trip_date: date) -> List[CompositeTrip]:
+        """Book a longer MAX trip and get off early at an intermediate stop.
+
+        Approach: for each free MAX trip from origin, query the API for
+        ALL entries with that same train_no on that date. If the target
+        station appears among those entries' origins or destinations, the
+        train stops there.
+        """
+        origin_full = get_station_name(origin)
+        target_full = get_station_name(target)
+
+        from network.finder import _get_scan_stations
+        stations = [s for s in _get_scan_stations() if s != origin_full]
+
+        # fetch all free trips from origin (parallel)
+        free_dict = self._client.search_all_to_destinations(
+            origin=origin_full, destinations=stations[:60],
+            trip_date=trip_date, only_available=True, workers=self._workers)
+
+        results: List[CompositeTrip] = []
+        seen: Set[str] = set()
+
+        for _dest, trips in free_dict.items():
+            for trip in trips:
+                if not trip.is_free or trip.trip_key in seen:
+                    continue
+                seen.add(trip.trip_key)
+
+                # query API for ALL entries with same train_no on same date
+                response = self._client.get_trips_raw(
+                    trip_date=trip_date,
+                    only_available=False,
+                    limit=100,
+                    train_no=trip.train_number,
+                )
+                stops: Set[str] = set()
+                for record in response.get("results", []):
+                    o = record.get("origine", "")
+                    d = record.get("destination", "")
+                    if o:
+                        stops.add(o)
+                    if d:
+                        stops.add(d)
+
+                # does the target station appear in the stop list?
+                if any(target_full.upper() in s.upper() or s.upper() in target_full.upper()
+                       for s in stops):
+                    results.append(CompositeTrip(legs=[TripLeg(trip=trip, is_max=True)]))
+
+        results.sort(key=lambda c: c.score)
+        return results
+
 
 def find_trip_with_decomposition(origin: str, destination: str, trip_date: date,
                                   config: Optional[SNCFConfig] = None) -> List[CompositeTrip]:

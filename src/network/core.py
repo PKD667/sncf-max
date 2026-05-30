@@ -47,6 +47,7 @@ class SearchResult:
     direct_free: List[Trip] = field(default_factory=list)
     direct_paid: List[Trip] = field(default_factory=list)
     decompositions: List[CompositeTrip] = field(default_factory=list)
+    descentres: List[CompositeTrip] = field(default_factory=list)  # book longer, get off early
 
     @property
     def best_free(self) -> Optional[Trip]:
@@ -88,6 +89,8 @@ class SearchResult:
         n_free_decomp = sum(1 for c in self.decompositions if c.is_fully_free)
         n_paid_decomp = len(self.decompositions) - n_free_decomp
         lines.append(f"Decomposed:   {n_free_decomp} fully-MAX, {n_paid_decomp} with paid legs")
+        if self.descentres:
+            lines.append(f"Descentres:    {len(self.descentres)} \"book longer, get off early\" options")
         return "\n".join(lines)
 
 
@@ -102,6 +105,8 @@ def search(
     trip_date: Optional[date] = None,
     *,
     decompose: bool = True,
+    departure_after: Optional[time] = None,
+    arrival_before: Optional[time] = None,
     config: Optional[SNCFConfig] = None,
 ) -> SearchResult:
     """Core search algorithm: find free TGV Max trips for a route.
@@ -140,6 +145,14 @@ def search(
     free.sort()
     paid.sort()
 
+    # apply time filters (intersection of both constraints)
+    if departure_after:
+        free = [t for t in free if t.departure_time >= departure_after]
+        paid = [t for t in paid if t.departure_time >= departure_after]
+    if arrival_before:
+        free = [t for t in free if t.arrival_time <= arrival_before]
+        paid = [t for t in paid if t.arrival_time <= arrival_before]
+
     result = SearchResult(
         origin=origin_full,
         destination=dest_full,
@@ -154,9 +167,14 @@ def search(
         all_decomp = decomposer.find_alternatives(
             origin=origin_full, destination=dest_full, trip_date=trip_date,
             include_paid=True,
+            departure_after=departure_after,
+            arrival_before=arrival_before,
         )
-        # keep only real multi-leg (>1 leg) — single-leg is just the direct trip
         result.decompositions = [c for c in all_decomp if len(c.legs) > 1]
+        # also find "descentres" — book longer MAX trip, get off at target
+        result.descentres = decomposer.find_descentres(
+            origin=origin_full, target=dest_full, trip_date=trip_date,
+        )
 
     return result
 
