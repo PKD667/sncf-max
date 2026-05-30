@@ -144,27 +144,31 @@ function priceKey(trip){
 
 // render
 function render(d){
-  show('sum');
+  show('sum');hide('descentBox'); // descentres merged into direct
   var freeDc=d.decompositions.filter(function(c){return c.is_fully_max});
   var paidDc=d.decompositions.filter(function(c){return !c.is_fully_max});
+  var allDirect = d.direct_free.slice();
+  // merge descentres into direct list with a note
+  var descSeen = {}; d.direct_free.forEach(function(t){descSeen[t.trip_key||t.train_number+':'+t.departure_time]=true});
+  (d.descentres||[]).forEach(function(c){
+    var t = c.legs[0];
+    if(!descSeen[t.trip_key||t.train_number+':'+t.departure_time]){
+      t._descentre = true; // mark for display
+      allDirect.push(t);
+    }
+  });
   document.getElementById('sc').innerHTML=
-    '<span class=\"tag tag-m\">direct: '+d.count_direct_free+'</span> '+
+    '<span class=\"tag tag-m\">direct: '+d.direct_free.length+'</span> '+
+    (d.descentres&&d.descentres.length?'<span class=\"tag tag-m\">descentres: '+d.descentres.length+'</span> ':'')+
     '<span class=\"tag tag-m\">detour: '+freeDc.length+'</span> '+
     '<span class=\"tag tag-p\">payant: '+d.direct_paid.length+'</span> '+
-    '<span class=\"tag tag-p\">detour payant: '+paidDc.length+'</span>'+
-    (d.count_descentres?' <span class=\"tag tag-m\">descentres: '+d.count_descentres+'</span>':'');
+    '<span class=\"tag tag-p\">detour payant: '+paidDc.length+'</span>';
 
-  // DIRECT MAX
-  show('directBox'); document.getElementById('fc').textContent='('+d.direct_free.length+')';
-  document.getElementById('fl').innerHTML=d.direct_free.length?d.direct_free.map(trH).join(''):'<div class=e>none</div>';
-
-  // DESCENDRES (book longer, get off early)
-  if(d.descentres&&d.descentres.length){
-    show('descentBox');document.getElementById('dc2').textContent='('+d.descentres.length+')';
-    document.getElementById('dl2').innerHTML=d.descentres.slice(0,15).map(function(c){
-      var t=c.legs[0];return '<div class=tr onclick=\"showTrip('+JSON.stringify(t).replace(/\"/g,'&quot;')+')\" title=\"book '+t.train_number+' to '+trunc(t.destination,18)+', get off at '+trunc(d.destination,18)+'\"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span><span class=\"tag tag-m\">'+t.train_number+'</span><span class=t-route style=color:var(--c)>'+trunc(t.origin,14)+' &rarr; '+trunc(t.destination,14)+' &darr; '+trunc(d.destination,14)+'</span><span class=stat-d>'+t.duration_min+'m</span></div>';
-    }).join('')+(d.descentres.length>15?'<div class=e>+ '+(d.descentres.length-15)+' more</div>':'');
-  }else hide('descentBox');
+  // DIRECT MAX (including descentres)
+  show('directBox'); document.getElementById('fc').textContent='('+allDirect.length+')';
+  document.getElementById('fl').innerHTML=allDirect.length?allDirect.map(function(t){
+    return trH(t,t._descentre);
+  }).join(''):'<div class=e>none</div>';
 
   // DETOUR MAX
   if(freeDc.length){show('detourBox');document.getElementById('dtourc').textContent='('+freeDc.length+')';
@@ -172,7 +176,7 @@ function render(d){
     if(freeDc.length>20)document.getElementById('dl').innerHTML+='<div class=e>+ '+(freeDc.length-20)+' more</div>'}
   else hide('detourBox');
 
-  // PAYANT (ordered by estimated price)
+  // PAYANT
   var paidSorted = d.direct_paid.slice().sort(function(a,b){return priceKey(a)-priceKey(b)});
   show('payantBox'); document.getElementById('pc').textContent='('+d.direct_paid.length+')';
   document.getElementById('pl').innerHTML=paidSorted.length?paidSorted.slice(0,10).map(trH).join('')+(paidSorted.length>10?'<div class=e>+ '+(paidSorted.length-10)+' more</div>':''):'<div class=e>none</div>';
