@@ -29,6 +29,7 @@ from flask import Flask, request, jsonify, send_from_directory
 from network.core import search, broadcast, SearchResult
 from config import STATIONS, get_station_name
 from network.decomposition import CompositeTrip
+from network import stations as stn
 
 app = Flask(__name__, static_folder=None)
 
@@ -59,8 +60,23 @@ def index() -> str:
 
 @app.route("/api/stations")
 def api_stations():
-    """Return known station aliases."""
-    return jsonify(STATIONS)
+    """Return every real TGV Max station with a pretty label + coords.
+
+    Shape: {"stations": [{"name", "display", "lat", "lon"}], "aliases": {...}}
+    `name` is the API station name (used as the search value); `display` is
+    the human-friendly label; lat/lon are present when known (for the map).
+    """
+    out = []
+    for name in stn.all_stations():
+        c = stn.coords(name)
+        out.append({
+            "name": name,
+            "display": stn.display_name(name),
+            "lat": c[0] if c else None,
+            "lon": c[1] if c else None,
+        })
+    out.sort(key=lambda s: s["display"])
+    return jsonify({"stations": out, "aliases": STATIONS})
 
 
 @app.route("/api/train_stops")

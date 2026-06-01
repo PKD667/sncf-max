@@ -1,36 +1,23 @@
 // TGV Max frontend app
-var STATIONS={},ALIASES=[],map=null,routeLayer=null;
-var C={
-"PARIS (intramuros)":[48.86,2.35],"PARIS GARE DE LYON":[48.84,2.37],"PARIS MONTPARNASSE 1 ET 2":[48.84,2.32],
-"PARIS NORD":[48.88,2.36],"PARIS EST":[48.88,2.36],"LYON (intramuros)":[45.76,4.84],
-"LYON PART DIEU":[45.76,4.86],"MARSEILLE ST CHARLES":[43.30,5.38],"BORDEAUX ST JEAN":[44.83,-0.56],
-"LILLE FLANDRES":[50.64,3.07],"LILLE EUROPE":[50.64,3.08],"STRASBOURG":[48.59,7.73],
-"NANTES":[47.22,-1.54],"RENNES":[48.11,-1.67],"TOULOUSE MATABIAU":[43.61,1.45],
-"MONTPELLIER ST ROCH":[43.60,3.88],"NICE VILLE":[43.70,7.26],"AVIGNON TGV":[43.92,4.79],
-"AIX EN PROVENCE TGV":[43.46,5.32],"VALENCE TGV":[44.99,4.98],"DIJON VILLE":[47.32,5.04],
-"GRENOBLE":[45.19,5.71],"ST PIERRE DES CORPS":[47.39,0.72],"LE MANS":[47.99,0.19],
-"ANGERS ST LAUD":[47.47,-0.56],"POITIERS":[46.58,0.35],"METZ VILLE":[49.11,6.18],
-"NANCY":[48.69,6.17],"CHAMPAGNE ARDENNE TGV":[49.26,4.03],
-"LE CREUSOT MONTCEAU MONTCHANIN":[46.81,4.44],"MACON LOCHE":[46.30,4.82],
-"CHAMBERY CHALLES LES EAUX":[45.57,5.92],"ARRAS":[50.29,2.78],"DOUAI":[50.37,3.08],
-"BREST":[48.39,-4.48],"Marne-la-Vallee Chessy":[48.87,2.78],
-"Lyon Saint-Exupery TGV":[45.72,5.08],"Aeroport Charles de Gaulle 2 TGV":[48.99,2.57],
-"Massy TGV":[48.73,2.26],"PERPIGNAN":[42.70,2.88],"NIMES":[43.83,4.37],"PAU":[43.29,-0.37],
-"BAYONNE":[43.50,-1.47],"LA ROCHELLE":[46.15,-1.15],"MULHOUSE":[47.75,7.34],"COLMAR":[48.07,7.36],
-"CALAIS":[50.95,1.85],"BOULOGNE":[50.73,1.61],"ROUEN":[49.45,1.09],"LE HAVRE":[49.49,0.11],
-"CAEN":[49.18,-0.35],"ST MALO":[48.65,-2.00],"VANNES":[47.66,-2.76],"LORIENT":[47.75,-3.36],
-"QUIMPER":[48.00,-4.09],"ANGOULEME":[45.65,0.16],"TOURS":[47.39,0.69],
-"BESANCON FRANCHE COMTE TGV":[47.31,5.95],"BELFORT MONTBELIARD TGV":[47.59,6.89],
-"BLOIS":[47.59,1.33],"ORLEANS":[47.91,1.91],"BEZIERS":[43.34,3.22],"SETE":[43.41,3.70],
-"NARBONNE":[43.19,3.01],"BIARRITZ":[43.46,-1.54],"DAX":[43.72,-1.07]
-};
+var STATIONS=[],map=null,routeLayer=null;
+var C={};          // API name -> [lat,lon]  (from backend)
+var DISP={};       // API name -> pretty display label (from backend)
 
 // helpers
 function latlng(station){
+  if(!station) return null;
   if(C[station]) return C[station];
   var u=station.toUpperCase();
   for(var k in C){if(u.indexOf(k.toUpperCase())!==-1||k.toUpperCase().indexOf(u)!==-1)return C[k]}
   return null;
+}
+// pretty label for a station name (backend-provided, with a JS fallback)
+function disp(name){
+  if(!name) return '';
+  if(DISP[name]) return DISP[name];
+  var s=name.replace(/\s*\(intramuros\)/i,'').replace(/\.+$/,'').trim();
+  return s.toLowerCase().replace(/\b\w/g,function(c){return c.toUpperCase()})
+          .replace(/\bTgv\b/g,'TGV').replace(/\bCdg\b/g,'CDG').replace(/\bSncf\b/g,'SNCF');
 }
 function ymd(d){return d.toISOString().slice(0,10)}
 function trunc(s,n){return s&&s.length>n?s.slice(0,n)+'...':(s||'')}
@@ -40,21 +27,31 @@ function loading(on,msg){document.getElementById('st').innerHTML=on?'<span class
 function hideDetail(){hide('detail')}
 
 // init
-fetch('/api/stations').then(function(r){return r.json()}).then(function(s){
-  ALIASES=Object.keys(s).sort(); STATIONS=s;
+fetch('/api/stations').then(function(r){return r.json()}).then(function(data){
+  STATIONS=data.stations||[];
+  STATIONS.forEach(function(s){
+    DISP[s.name]=s.display;
+    if(s.lat!=null&&s.lon!=null)C[s.name]=[s.lat,s.lon];
+  });
   function pop(sel,def){var e=document.querySelector('select[name='+sel+']');
-    ALIASES.forEach(function(a){var o=document.createElement('option');
-    o.value=a;o.text=a+' ['+trunc(s[a],20)+']';if(a===def)o.selected=true;e.appendChild(o)});}
-  pop('origin','paris');pop('destination','lyon');
+    STATIONS.forEach(function(s){var o=document.createElement('option');
+      o.value=s.name;o.text=s.display;if(s.name===def)o.selected=true;e.appendChild(o)});}
+  pop('origin','PARIS (intramuros)');pop('destination','LYON (intramuros)');
   document.querySelector('input[name=date]').value=ymd(new Date(Date.now()+7*86400000));
+  drawStationMarkers();
 }).catch(function(e){console.error('station load failed',e)});
+
+function drawStationMarkers(){
+  if(!map)return;
+  for(var k in C){L.circleMarker(C[k],{radius:3,fillColor:'#3730a3',color:'#fff',weight:1,fillOpacity:0.7}).bindTooltip(disp(k)).addTo(map)}
+}
 
 try{setTimeout(function(){
   var L=window.L;if(!L)return;
   map=L.map('map').setView([46.5,2.5],6);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'&copy;CARTO'}).addTo(map);
-  for(var k in C){L.circleMarker(C[k],{radius:3,fillColor:'#3730a3',color:'#fff',weight:1,fillOpacity:0.7}).bindTooltip(trunc(k,25)).addTo(map)}
   routeLayer=L.layerGroup().addTo(map);
+  drawStationMarkers();
 },800)}catch(e){console.log('map disabled')}
 
 // search
@@ -98,8 +95,8 @@ function showTrip(t){
   var o=t.origin,d=t.destination,oc=latlng(o),dc=latlng(d);
   if(oc&&dc){
     routeLayer.addLayer(L.polyline([oc,dc],{color:'#10b981',weight:3,opacity:0.9}));
-    routeLayer.addLayer(L.circleMarker(oc,{radius:6,fillColor:'#10b981',color:'#fff',weight:2,fillOpacity:1}).bindTooltip(o));
-    routeLayer.addLayer(L.circleMarker(dc,{radius:6,fillColor:'#3730a3',color:'#fff',weight:2,fillOpacity:1}).bindTooltip(d));
+    routeLayer.addLayer(L.circleMarker(oc,{radius:6,fillColor:'#10b981',color:'#fff',weight:2,fillOpacity:1}).bindTooltip(disp(o)));
+    routeLayer.addLayer(L.circleMarker(dc,{radius:6,fillColor:'#3730a3',color:'#fff',weight:2,fillOpacity:1}).bindTooltip(disp(d)));
     map.fitBounds(L.latLngBounds([oc,dc]),{padding:[40,40],maxZoom:8});
   }
   show('detail');
@@ -108,8 +105,8 @@ function showTrip(t){
     'Train <b style=color:var(--hi)>'+t.train_number+'</b><br>'+
     '<span style=color:var(--dim)>'+t.departure_date+'</span><br>'+
     '<div style=margin-top:4px>'+
-    '<b>'+t.departure_time+'</b> '+o+'<br>'+
-    '<b>'+t.arrival_time+'</b> '+d+'<br>'+
+    '<b>'+t.departure_time+'</b> '+disp(o)+'<br>'+
+    '<b>'+t.arrival_time+'</b> '+disp(d)+'<br>'+
     '<span style=color:var(--dim)>'+t.duration_min+' min | '+(t.entity||'')+'</span>'+
     '</div>'+
     '<div id=\"stopList\" style=\"margin-top:6px;color:var(--dim);font-size:10px\">loading stops...</div>'+
@@ -123,7 +120,7 @@ function showTrip(t){
     var h='<div style=\"margin-top:4px;border-top:1px solid var(--border);padding-top:4px\">stops: ';
     stops.forEach(function(s,i){
       var icon=s.type==='departure'?'&rarr;':'&larr;';
-      h+='<span style=color:var(--hi)>'+s.time+'</span> '+icon+' '+trunc(s.station,16)+(i<stops.length-1?' | ':'');
+      h+='<span style=color:var(--hi)>'+s.time+'</span> '+icon+' '+trunc(disp(s.station),16)+(i<stops.length-1?' | ':'');
     });
     h+='</div>';
     document.getElementById('stopList').innerHTML=h;
@@ -137,14 +134,14 @@ function showComposite(c){
     var cls=c.is_fully_max?'tag-m':'tag-p';
     html+='<span class=\"tag '+cls+'\">leg '+(i+1)+'</span> ';
     html+='Train <b style=color:var(--hi)>'+l.train_number+'</b><br>';
-    html+='<b>'+l.departure_time+'</b> '+l.origin+'<br><b>'+l.arrival_time+'</b> '+l.destination+'<br>';
+    html+='<b>'+l.departure_time+'</b> '+disp(l.origin)+'<br><b>'+l.arrival_time+'</b> '+disp(l.destination)+'<br>';
     html+='<span style=color:var(--dim)>'+l.duration_min+'min</span><br>';
     html+='<div id=leg'+i+'stops style=\"font-size:9px;color:var(--dim)\"></div>';
     if(f&&t){
       var color=i===0?'#10b981':'#3730a3';
       routeLayer.addLayer(L.polyline([f,t],{color:color,weight:2,opacity:0.8}));
-      routeLayer.addLayer(L.circleMarker(f,{radius:5,fillColor:color,color:'#fff',weight:1,fillOpacity:0.8}).bindTooltip(trunc(l.origin,25)));
-      if(i===c.legs.length-1) routeLayer.addLayer(L.circleMarker(t,{radius:5,fillColor:color,color:'#fff',weight:1,fillOpacity:0.8}).bindTooltip(trunc(l.destination,25)));
+      routeLayer.addLayer(L.circleMarker(f,{radius:5,fillColor:color,color:'#fff',weight:1,fillOpacity:0.8}).bindTooltip(disp(l.origin)));
+      if(i===c.legs.length-1) routeLayer.addLayer(L.circleMarker(t,{radius:5,fillColor:color,color:'#fff',weight:1,fillOpacity:0.8}).bindTooltip(disp(l.destination)));
       pts.push(f);pts.push(t);
     }
   });
@@ -159,7 +156,7 @@ function showComposite(c){
       var stops=s.stops||[];
       var h='stops: ';
       stops.forEach(function(st,j){
-        h+=st.time+' '+(st.type==='departure'?'&rarr;':'&larr;')+' '+trunc(st.station,14)+(j<stops.length-1?' | ':'');
+        h+=st.time+' '+(st.type==='departure'?'&rarr;':'&larr;')+' '+trunc(disp(st.station),14)+(j<stops.length-1?' | ':'');
       });
       var el=document.getElementById('leg'+i+'stops');
       if(el)el.innerHTML=h;
@@ -221,12 +218,12 @@ function render(d){
 function renderHunt(origin,trips){
   hide('detourBox');hide('detourPayBox');hide('payantBox');hide('descentBox');
   show('sum');show('directBox');
-  document.getElementById('sc').innerHTML='<span class=\"tag tag-m\">'+trips.length+' free from '+origin+'</span>';
+  document.getElementById('sc').innerHTML='<span class=\"tag tag-m\">'+trips.length+' free from '+disp(origin)+'</span>';
   document.getElementById('fc').textContent='('+trips.length+')';
   var g={};trips.forEach(function(t){var d=t.destination;if(!g[d])g[d]=[];g[d].push(t)});
-  var h='';for(var d in g){h+='<div style=\"font-weight:bold;color:var(--hi);margin-top:4px\">'+d+' ('+g[d].length+')</div>';h+=g[d].slice(0,4).map(trH).join('');if(g[d].length>4)h+='<div class=e>+ '+(g[d].length-4)+' more</div>'}
+  var h='';for(var d in g){h+='<div style=\"font-weight:bold;color:var(--hi);margin-top:4px\">'+disp(d)+' ('+g[d].length+')</div>';h+=g[d].slice(0,4).map(trH).join('');if(g[d].length>4)h+='<div class=e>+ '+(g[d].length-4)+' more</div>'}
   document.getElementById('fl').innerHTML=h||'<div class=e>none</div>';
 }
 
-function trH(t){return '<div class=tr onclick=\"showTrip('+JSON.stringify(t).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span><span class=\"tag tag-m\">'+t.train_number+'</span><span class=t-route>'+trunc(t.origin,18)+' &rarr; '+trunc(t.destination,18)+'</span><span class=stat-d>'+t.duration_min+'m</span></div>'}
-function dcH(c){var L=c.legs.map(function(l){return trunc(l.origin,9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(c.destination,9)+'('+c.arrival_time+')';var cls=c.is_fully_max?'tag-m':'tag-p',label=c.is_fully_max?(c.max_legs+'M'):(c.max_legs+'M+'+c.paid_legs+'P');return '<div class=tr onclick=\"showComposite('+JSON.stringify(c).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class=\"tag '+cls+'\">'+label+'</span><span class=t-route>'+L+'</span><span class=stat-d>'+c.total_duration_min+'m</span></div>'}
+function trH(t){return '<div class=tr onclick=\"showTrip('+JSON.stringify(t).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span><span class=\"tag tag-m\">'+t.train_number+'</span><span class=t-route>'+trunc(disp(t.origin),18)+' &rarr; '+trunc(disp(t.destination),18)+'</span><span class=stat-d>'+t.duration_min+'m</span></div>'}
+function dcH(c){var L=c.legs.map(function(l){return trunc(disp(l.origin),9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(disp(c.destination),9)+'('+c.arrival_time+')';var cls=c.is_fully_max?'tag-m':'tag-p',label=c.is_fully_max?(c.max_legs+'M'):(c.max_legs+'M+'+c.paid_legs+'P');return '<div class=tr onclick=\"showComposite('+JSON.stringify(c).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class=\"tag '+cls+'\">'+label+'</span><span class=t-route>'+L+'</span><span class=stat-d>'+c.total_duration_min+'m</span></div>'}
