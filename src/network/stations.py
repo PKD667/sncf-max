@@ -24,7 +24,6 @@ Provides:
 from __future__ import annotations
 
 import json
-import math
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -114,72 +113,43 @@ def neighbors(name: str) -> List[str]:
     return _graph().get(canon, [])
 
 
-def has_edge(origin: str, destination: str) -> bool:
+def rideable(origin: str, destination: str) -> bool:
+    """Can you reach *destination* from *origin* on a single train?
+
+    True iff some train physically stops at the origin and then the
+    destination — i.e. the destination is among the origin's stop-wise
+    neighbours.  This is exact (built from real train stop sequences), so it
+    tells direct/descentre journeys apart from change-of-train detours
+    without any geographic guessing.
+    """
     o = resolve(origin) or origin
     d = resolve(destination) or destination
     return d in _graph().get(o, [])
 
 
-# ---------------------------------------------------------------------------
-# Geography
-# ---------------------------------------------------------------------------
+# alias kept for older callers
+has_edge = rideable
 
+
+def transfer_stations(origin: str, destination: str) -> List[str]:
+    """Stations where you can change trains to get from origin to destination.
+
+    A valid transfer M is rideable from the origin *and* can ride onward to
+    the destination (origin -> M -> destination, all on real stops).
+    """
+    o = resolve(origin) or origin
+    d = resolve(destination) or destination
+    g = _graph()
+    from_o = set(g.get(o, []))
+    return sorted(m for m in from_o
+                  if m not in (o, d) and d in g.get(m, []))
+
+
+# coordinates are kept only for drawing the map, never for routing
 def coords(name: str) -> Optional[Tuple[float, float]]:
     canon = resolve(name) or name
     c = _data()["coords"].get(canon)
     return (c[0], c[1]) if c else None
-
-
-def distance_km(a: str, b: str) -> Optional[float]:
-    ca, cb = coords(a), coords(b)
-    if not ca or not cb:
-        return None
-    lat1, lon1 = ca
-    lat2, lon2 = cb
-    r = 6371.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(h))
-
-
-def on_the_way(origin: str, via: str, destination: str, factor: float = 1.4) -> bool:
-    """Is *via* a sensible intermediate for an origin->destination detour?
-
-    True when going origin->via->destination is at most ``factor`` times the
-    direct great-circle distance (so we never propose backtracking to the
-    other side of the country).  If coordinates are missing for *via* we
-    can't vouch for it, so it's rejected; if they're missing for origin or
-    destination we can't judge, so we accept (topology already vouched it).
-    """
-    direct = distance_km(origin, destination)
-    leg1 = distance_km(origin, via)
-    leg2 = distance_km(via, destination)
-    if leg1 is None or leg2 is None:
-        return False
-    if direct is None or direct == 0:
-        return True
-    return (leg1 + leg2) <= factor * direct
-
-
-def farther_along(origin: str, target: str, candidate: str,
-                  factor: float = 1.6, min_extra_km: float = 5.0) -> bool:
-    """Is *candidate* plausibly 'past' the target on an origin->target axis?
-
-    Used for descentres (book a longer trip, get off at the target): the
-    candidate destination should be farther from the origin than the target
-    is, and roughly in the same direction (origin->candidate not much longer
-    than origin->target + target->candidate)."""
-    d_target = distance_km(origin, target)
-    d_cand = distance_km(origin, candidate)
-    d_tc = distance_km(target, candidate)
-    if d_target is None or d_cand is None or d_tc is None:
-        return False
-    if d_cand < d_target + min_extra_km:
-        return False
-    # candidate must be roughly beyond target, not off on a tangent
-    return d_cand <= factor * (d_target + d_tc)
 
 
 # ---------------------------------------------------------------------------

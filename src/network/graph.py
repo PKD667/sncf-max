@@ -20,8 +20,8 @@ from network.stations import (
     resolve,
     all_stations,
     coords,
-    distance_km,
-    on_the_way,
+    rideable,
+    transfer_stations,
     display_name,
 )
 
@@ -41,7 +41,7 @@ __all__ = [
     "graph_to_api",
     "all_stations",
     "coords",
-    "distance_km",
-    "on_the_way",
+    "rideable",
+    "transfer_stations",
     "display_name",
 ]

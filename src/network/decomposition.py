@@ -137,9 +137,7 @@ class TripDecomposer:
 
     MIN_CONNECTION_TIME = 15
     MAX_CONNECTION_TIME = 120
-    # Allow a detour up to this multiple of the direct great-circle distance.
-    DETOUR_FACTOR = 1.4
-    # Cap on intermediates to probe (already small after geo pruning).
+    # Cap on transfer stations to probe per detour search (bounds API calls).
     MAX_INTERMEDIATES = 30
 
     def __init__(self, config: Optional[SNCFConfig] = None, max_workers: int = 8):
@@ -147,9 +145,35 @@ class TripDecomposer:
         self._client = SNCFMaxClient(config=self.config)
         self._workers = max_workers
         self._cache: Dict[str, List[Trip]] = {}
+        self._stops_cache: Dict[str, Set[str]] = {}
 
     def _cache_key(self, origin: str, destination: str, date: date, only_max: bool) -> str:
         return f"{origin}|{destination}|{date}|{only_max}"
+
+    def _train_stops(self, train_no: str, trip_date: date) -> Set[str]:
+        """Every station a given train stops at on a date (cached).
+
+        Reconstructed from all the train's (origine, destination) records —
+        the exact, stop-wise truth used to tell a descentre apart from a
+        genuine change-of-train detour.
+        """
+        key = f"{train_no}|{trip_date}"
+        if key not in self._stops_cache:
+            resp = self._client.get_trips_raw(
+                trip_date=trip_date, only_available=False, limit=100, train_no=train_no)
+            stops: Set[str] = set()
+            for record in resp.get("results", []):
+                for field in ("origine", "destination"):
+                    s = record.get(field)
+                    if s:
+                        stops.add(s)
+            self._stops_cache[key] = stops
+        return self._stops_cache[key]
+
+    @staticmethod
+    def _stops_include(stops: Set[str], target: str) -> bool:
+        up = target.upper()
+        return any(up in s.upper() or s.upper() in up for s in stops)
 
     def _fetch(self, origin: str, destination: str, trip_date: date,
                only_max: bool = True) -> List[Trip]:
@@ -162,31 +186,6 @@ class TripDecomposer:
 
     def clear_cache(self) -> None:
         self._cache.clear()
-
-    def _detour_intermediates(self, o_canon: str, d_canon: str) -> List[str]:
-        """Stations that make a sensible 2-leg detour from o to d.
-
-        A candidate X must have a real TGV route o->X *and* X->d, and lie
-        geographically on the way (origin->X->dest within DETOUR_FACTOR of the
-        direct distance).  Ranked by how little they deviate, so the most
-        natural detours (e.g. Le Creusot for Paris->Lyon) come first.
-        """
-        graph = stn.graph()
-        out = set(graph.get(o_canon, []))
-        into = {x for x in graph if d_canon in graph.get(x, [])}
-        candidates = [
-            x for x in (out & into)
-            if x not in (o_canon, d_canon)
-            and stn.on_the_way(o_canon, x, d_canon, self.DETOUR_FACTOR)
-        ]
-
-        def _deviation(x: str) -> float:
-            l1 = stn.distance_km(o_canon, x)
-            l2 = stn.distance_km(x, d_canon)
-            return (l1 + l2) if (l1 is not None and l2 is not None) else 1e9
-
-        candidates.sort(key=_deviation)
-        return candidates[: self.MAX_INTERMEDIATES]
 
     def _can_connect(self, arr: Trip, dep: Trip) -> bool:
         if arr.departure_date != dep.departure_date:
@@ -224,8 +223,15 @@ class TripDecomposer:
                 continue
             alternatives.append(CompositeTrip(legs=[TripLeg(trip=t, is_max=t.is_free)]))
 
-        # 2. Geography-aware 2-leg detours through real TGV intermediates
-        intermediates = self._detour_intermediates(o_canon, d_canon)
+        # 2. Change-of-train detours — for when no single MAX train covers
+        #    origin->dest on this date (the whole point of the tool).  We probe
+        #    every transfer station M where origin->M and M->dest are both real
+        #    train rides, build 2-leg combos, then drop the redundant ones: if
+        #    the first leg's actual train already stops at the destination you
+        #    wouldn't change trains, you'd just stay on it and get off there
+        #    (that's a descentre).  So Paris->St-Etienne->Lyon is dropped (that
+        #    train stops at Lyon) while Paris->Le Creusot->Lyon survives.
+        intermediates = stn.transfer_stations(o_canon, d_canon)[: self.MAX_INTERMEDIATES]
         if intermediates:
             _dep = departure_after
             _arr = arrival_before
@@ -259,10 +265,22 @@ class TripDecomposer:
                         local.append(c)
                 return local
 
+            raw_detours: List[CompositeTrip] = []
             with ThreadPoolExecutor(max_workers=self._workers) as ex:
                 futures = {ex.submit(_eval, v): v for v in intermediates}
                 for future in as_completed(futures):
-                    alternatives.extend(future.result())
+                    raw_detours.extend(future.result())
+
+            # Drop detours whose first leg already passes through the
+            # destination (redundant with a descentre).  Verify exactly
+            # against each first-leg train's real stop list, in parallel.
+            leg1_trains = {c.legs[0].trip.train_number for c in raw_detours}
+            with ThreadPoolExecutor(max_workers=self._workers) as ex:
+                list(ex.map(lambda tn: self._train_stops(tn, trip_date), leg1_trains))
+            for c in raw_detours:
+                stops = self._train_stops(c.legs[0].trip.train_number, trip_date)
+                if not self._stops_include(stops, d_canon):
+                    alternatives.append(c)
 
         # Sort and deduplicate
         alternatives.sort(key=lambda x: x.score)
@@ -289,28 +307,30 @@ class TripDecomposer:
         return alts[0] if alts else None
 
     def find_descentres(self, origin: str, target: str, trip_date: date) -> List[CompositeTrip]:
-        """Book a longer MAX trip and get off early at an intermediate stop.
+        """Book a longer MAX trip and get off early at the target stop.
 
-        Approach: for each free MAX trip from origin, query the API for
-        ALL entries with that same train_no on that date. If the target
-        station appears among those entries' origins or destinations, the
-        train stops there.
+        Stop-wise and exact: a candidate is a MAX trip origin->X whose train
+        actually stops at the target on the way (verified against the train's
+        real stop list).  We prefilter X to stations rideable from *both* the
+        origin and the target — i.e. plausibly past the target — then confirm
+        each train truly passes through the target before keeping it.
         """
         origin_full = get_station_name(origin)
         target_full = get_station_name(target)
         o_canon = stn.resolve(origin_full) or origin_full
         t_canon = stn.resolve(target_full) or target_full
 
-        # Only worth probing destinations the origin can actually reach that
-        # lie *beyond* the target (a longer trip we'd cut short at the target).
-        # Restrict to those farther along the origin->target axis; fall back to
-        # all reachable destinations when coordinates are unknown.
-        reachable = [d for d in stn.neighbors(o_canon) if d != o_canon]
-        beyond = [d for d in reachable
-                  if d != t_canon and stn.farther_along(o_canon, t_canon, d)]
-        destinations = beyond or reachable
+        # Termini worth probing: rideable from the origin AND from the target,
+        # so a single origin->X train can plausibly stop at the target en
+        # route.  (Exact stop verification below rejects the false positives,
+        # e.g. an origin->X train that doesn't actually pass the target.)
+        from_o = set(stn.neighbors(o_canon))
+        from_t = set(stn.neighbors(t_canon))
+        destinations = sorted((from_o & from_t) - {o_canon, t_canon})
+        if not destinations:
+            return []
 
-        # fetch all free trips from origin (parallel)
+        # fetch all free trips from origin to those termini (parallel)
         free_dict = self._client.search_all_to_destinations(
             origin=origin_full, destinations=destinations,
             trip_date=trip_date, only_available=True, workers=self._workers)
@@ -326,30 +346,18 @@ class TripDecomposer:
                     continue
                 candidates.setdefault(trip.train_number, trip)
 
-        def _stops_for(train_no: str) -> Set[str]:
-            response = self._client.get_trips_raw(
-                trip_date=trip_date, only_available=False,
-                limit=100, train_no=train_no)
-            stops: Set[str] = set()
-            for record in response.get("results", []):
-                for key in ("origine", "destination"):
-                    s = record.get(key, "")
-                    if s:
-                        stops.add(s)
-            return stops
-
-        target_up = t_canon.upper()
         results: List[CompositeTrip] = []
         with ThreadPoolExecutor(max_workers=self._workers) as ex:
-            futures = {ex.submit(_stops_for, tn): trip for tn, trip in candidates.items()}
+            futures = {ex.submit(self._train_stops, tn, trip_date): trip
+                       for tn, trip in candidates.items()}
             for future in as_completed(futures):
                 trip = futures[future]
                 try:
                     stops = future.result()
                 except Exception:
                     continue
-                # does the train actually stop at the target?
-                if any(target_up in s.upper() or s.upper() in target_up for s in stops):
+                # does the train actually stop at the target on the way?
+                if self._stops_include(stops, t_canon):
                     results.append(CompositeTrip(legs=[TripLeg(trip=trip, is_max=True)]))
 
         results.sort(key=lambda c: c.score)
