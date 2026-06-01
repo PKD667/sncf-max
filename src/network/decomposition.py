@@ -83,20 +83,42 @@ class CompositeTrip:
         return self.is_fully_max
 
     @property
+    def total_fare(self) -> "Fare":
+        """Combined fare for the paid legs (MAX legs are free).
+
+        Each paid leg is priced via the fare registry — exact published
+        tariff when known, otherwise a per-km estimate.  Returns a Fare whose
+        ``exact`` flag is True only if every paid leg was exact."""
+        from network.fares import estimate_fare, Fare
+        paid = [leg for leg in self.legs if not leg.is_max]
+        if not paid:
+            return Fare(0, 0, True, "max")
+        lo = hi = 0
+        exact = True
+        known = False
+        for leg in paid:
+            f = estimate_fare(str(leg.trip.origin), str(leg.trip.destination),
+                              leg.trip.carrier)
+            if f.min_cents is None:
+                exact = False
+                continue
+            lo += f.min_cents
+            hi += f.max_cents or f.min_cents
+            exact = exact and f.exact
+            known = True
+        if not known:
+            return Fare(None, None, False, "unknown")
+        return Fare(lo, hi, exact, "composite")
+
+    @property
     def total_price_cents(self) -> Optional[int]:
-        total = sum(
-            leg.trip.price_cents
-            for leg in self.legs
-            if not leg.is_max and leg.trip.price_cents is not None
-        )
-        return total if total > 0 else None
+        return self.total_fare.min_cents
 
     @property
     def price_display(self) -> str:
         if self.is_fully_max:
             return "MAX (0EUR)"
-        pc = self.total_price_cents
-        return f"{pc/100:.2f}EUR" if pc else "Price unknown"
+        return self.total_fare.display
 
     @property
     def origin(self) -> str:

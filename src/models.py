@@ -74,6 +74,22 @@ class Trip:
         return True
 
     @property
+    def carrier(self) -> str:
+        """Operator class, for fare resolution: TGV / OUIGO / INTERCITES / TER.
+
+        Derived from the dataset's ``entity``.  TGV Max records are TGV/IC;
+        TER and regional carriers arrive once their timetables are ingested,
+        and will set this explicitly."""
+        e = (self.entity or "").upper()
+        if "OUIGO" in e:
+            return "OUIGO"
+        if "INTERCIT" in e or e == "IC":
+            return "INTERCITES"
+        if e.startswith("TER") or e == "TER":
+            return "TER"
+        return "TGV"
+
+    @property
     def is_max(self) -> bool:
         return self.is_free
 
