@@ -162,10 +162,11 @@ function showComposite(c){
   var html='<div style=line-height:1.8>';
   c.legs.forEach(function(l,i){
     var f=latlng(l.origin),t=latlng(l.destination);
-    var cls=c.is_fully_max?'tag-m':'tag-p';
-    html+='<span class=\"tag '+cls+'\">leg '+(i+1)+'</span> ';
-    html+='Train <b style=color:var(--hi)>'+l.train_number+'</b><br>';
-    html+='<b>'+l.departure_time+'</b> '+disp(l.origin)+'<br><b>'+l.arrival_time+'</b> '+disp(l.destination)+'<br>';
+    var legtag=l.is_free?'<span class=\"tag tag-m\">MAX</span>':'<span class=\"tag '+(l.carrier==='TER'?'tag-c':'tag-p')+'\">'+(l.carrier||'')+'</span>';
+    html+='<span style=color:var(--dim)>leg '+(i+1)+'</span> '+legtag+' ';
+    html+='Train <b style=color:var(--hi)>'+l.train_number+'</b>';
+    html+=l.is_free?'':' <span style=color:var(--y)>'+(l.price_display||'')+'</span>';
+    html+='<br><b>'+l.departure_time+'</b> '+disp(l.origin)+'<br><b>'+l.arrival_time+'</b> '+disp(l.destination)+'<br>';
     html+='<span style=color:var(--dim)>'+l.duration_min+'min</span><br>';
     html+='<div id=leg'+i+'stops style=\"font-size:9px;color:var(--dim)\"></div>';
     if(f&&t){

@@ -83,10 +83,10 @@ class Trip:
         e = (self.entity or "").upper()
         if "OUIGO" in e:
             return "OUIGO"
-        if "INTERCIT" in e or e == "IC":
+        if "INTERCIT" in e or e == "IC":          # check before TER ("inTERcites")
             return "INTERCITES"
-        if e.startswith("TER") or e == "TER":
-            return "TER"
+        if "TER" in e or "NAVETTE" in e or "TRAMTRAIN" in e:
+            return "TER"                            # "Train TER", "Car TER", navettes
         return "TGV"
 
     @property
