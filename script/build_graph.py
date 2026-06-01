@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Build the station + route-graph cache straight from the SNCF API.
+"""Build the station list + stop-wise ride graph straight from the SNCF API.
 
-The TGV Max dataset (``tgvmax`` on data.sncf.com) is itself the source of
-truth for which stations exist and which (origine, destination) pairs are
-real TGV connections.  We paginate the ODS ``group_by`` endpoint to pull the
-*complete* list (the live API truncates at 100 rows per request), then write:
+The graph is **stop-wise, not trip-wise**: we reconstruct each train's real
+ordered stop sequence (by grouping a day's records by train_no and sorting
+the origine/destination stops by time), then add an edge A->B for every pair
+of stops where A comes before B on the same train.  So ``B in graph[A]``
+means "a single train physically stops at A and then B" — which is exactly
+what tells a direct/descentre ride apart from a change-of-train detour, with
+no geographic guessing.
 
+Writes (committed so the app needs no API round-trip at runtime):
   - src/network/stations.json     {"stations": [...], "coords": {NAME: [lat,lon]}}
-  - src/network/routes_graph.json {origin_api_name: [destination_api_name, ...]}
-
-Both are committed to the repo so the running app needs no API round-trip and
-the detour engine works off correct, self-consistent API station names.
+  - src/network/routes_graph.json {station: [stations rideable on one train, ...]}
 
 Run from anywhere:  python3 script/build_graph.py
 """
@@ -21,14 +22,19 @@ import json
 import sys
 import time
 from collections import defaultdict
+from datetime import date, timedelta
 from pathlib import Path
 
 import requests
 
 NETWORK_DIR = Path(__file__).resolve().parent.parent / "src" / "network"
-RECORDS_URL = (
-    "https://data.sncf.com/api/explore/v2.1/catalog/datasets/tgvmax/records"
-)
+BASE = "https://data.sncf.com/api/explore/v2.1/catalog/datasets/tgvmax"
+RECORDS_URL = f"{BASE}/records"
+EXPORT_URL = f"{BASE}/exports/json"
+
+# Days ahead to sample when reconstructing train stop sequences.  A few
+# weekdays unioned together catch trains that don't run every day.
+SAMPLE_DAYS = [10, 11, 12, 13]
 
 # Curated coordinates keyed by a substring that uniquely identifies a city in
 # the API station names.  Every real station whose name contains the keyword
@@ -188,6 +194,34 @@ def _paginate(session: requests.Session, select: str, group_by: str) -> list[dic
     return out
 
 
+def _export_day(session: requests.Session, date_str: str) -> list[dict]:
+    """All records for one date via the exports endpoint (no offset cap)."""
+    r = session.get(EXPORT_URL, params={"where": f"date=date'{date_str}'"}, timeout=180)
+    r.raise_for_status()
+    return r.json()
+
+
+def _sort_key(hhmm: str) -> str:
+    """Order stops by time, pushing after-midnight stops to the end so a
+    train running e.g. 22:50 -> 00:40 keeps its real stop order."""
+    if not hhmm:
+        return "z"
+    return ("1" + hhmm) if hhmm < "04:00" else ("0" + hhmm)
+
+
+def _train_stops(records: list[dict]) -> list[str]:
+    """Reconstruct one train's ordered stop list from its O/D records."""
+    first_seen: dict[str, str] = {}
+    for rec in records:
+        o, d = rec.get("origine"), rec.get("destination")
+        dep, arr = rec.get("heure_depart"), rec.get("heure_arrivee")
+        if o and (o not in first_seen or _sort_key(dep) < _sort_key(first_seen[o])):
+            first_seen[o] = dep or ""
+        if d and (d not in first_seen or _sort_key(arr) < _sort_key(first_seen[d])):
+            first_seen[d] = arr or ""
+    return [s for s, _ in sorted(first_seen.items(), key=lambda kv: _sort_key(kv[1]))]
+
+
 def _attach_coords(stations: list[str]) -> dict[str, list[float]]:
     """Map each station to coords if its name contains a known city keyword.
 
@@ -214,16 +248,31 @@ def main() -> int:
     stations = sorted({r["origine"] for r in station_rows if r.get("origine")})
     print(f"  {len(stations)} stations")
 
-    print("fetching route graph ...")
-    route_rows = _paginate(session, "origine, destination", "origine, destination")
+    print("reconstructing train stop sequences (stop-wise graph) ...")
     adj: dict[str, set[str]] = defaultdict(set)
-    for r in route_rows:
-        o, d = r.get("origine"), r.get("destination")
-        if o and d and o != d:
-            adj[o].add(d)
+    n_trains = 0
+    for day in SAMPLE_DAYS:
+        date_str = (date.today() + timedelta(days=day)).isoformat()
+        rows = _export_day(session, date_str)
+        by_train: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            tn = r.get("train_no")
+            if tn:
+                by_train[tn].append(r)
+        for recs in by_train.values():
+            stops = _train_stops(recs)
+            n_trains += 1
+            # every forward pair of stops on this train is rideable
+            for i in range(len(stops)):
+                for j in range(i + 1, len(stops)):
+                    if stops[i] != stops[j]:
+                        adj[stops[i]].add(stops[j])
+        print(f"  {date_str}: {len(rows)} records, {len(by_train)} trains")
+        time.sleep(0.1)
     graph = {o: sorted(dests) for o, dests in sorted(adj.items())}
     n_edges = sum(len(v) for v in graph.values())
-    print(f"  {len(graph)} origins, {n_edges} directed edges")
+    print(f"  {len(graph)} stations, {n_edges} stop-wise ride edges "
+          f"(from {n_trains} train-days)")
 
     coords = _attach_coords(stations)
     print(f"  {len(coords)}/{len(stations)} stations have coordinates")
