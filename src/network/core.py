@@ -145,6 +145,11 @@ def search(
     free.sort()
     paid.sort()
 
+    # direct TER trips (regional, paid per-km) from the GTFS timetable
+    from network import ter
+    if ter.has_data():
+        paid = paid + ter.legs_between(origin_full, dest_full, trip_date)
+
     # apply time filters (intersection of both constraints)
     if departure_after:
         free = [t for t in free if t.departure_time >= departure_after]

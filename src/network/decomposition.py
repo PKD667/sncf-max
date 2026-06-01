@@ -264,8 +264,43 @@ class TripDecomposer:
         if key not in self._cache:
             free, paid = self._client.search_all_trips(
                 origin=origin, destination=destination, trip_date=trip_date)
-            self._cache[key] = free if only_max else free + paid
+            trips = free if only_max else free + paid
+            # TER legs are paid (per-km), so only when paid legs are allowed
+            if not only_max:
+                from network import ter
+                if ter.has_data():
+                    trips = trips + ter.legs_between(origin, destination, trip_date)
+            self._cache[key] = trips
         return self._cache[key]
+
+    def _transfer_candidates(self, o_canon: str, d_canon: str,
+                             trip_date: date, include_ter: bool) -> List[str]:
+        """Stations to change trains at, across MAX *and* TER (when allowed).
+
+        A via M works if you can ride origin->M and M->dest, by either mode —
+        so a MAX leg can hand off to a TER leg (e.g. arrive Valence TGV by
+        MAX, take the TER navette onward)."""
+        max_from_o = set(stn.neighbors(o_canon))
+        graph = stn.graph()
+        max_into_d = {x for x in graph if d_canon in graph.get(x, [])}
+        vias = set(stn.transfer_stations(o_canon, d_canon))
+        if include_ter:
+            from network import ter
+            if ter.has_data():
+                from_o = max_from_o | set(ter.destinations(o_canon, trip_date))
+                into_d = max_into_d | set(ter.origins(d_canon, trip_date))
+                vias |= (from_o & into_d)
+        vias.discard(o_canon)
+        vias.discard(d_canon)
+
+        # Prioritise vias that keep a free MAX leg (reachable from origin or
+        # into destination by MAX), so the cap never drops the useful
+        # multimodal handoffs (e.g. a MAX leg to Valence TGV before the cap).
+        def _priority(v: str) -> tuple:
+            free_leg = (v in max_from_o) or (v in max_into_d)
+            return (0 if free_leg else 1, v)
+
+        return sorted(vias, key=_priority)
 
     def clear_cache(self) -> None:
         self._cache.clear()
@@ -314,7 +349,8 @@ class TripDecomposer:
         #    wouldn't change trains, you'd just stay on it and get off there
         #    (that's a descentre).  So Paris->St-Etienne->Lyon is dropped (that
         #    train stops at Lyon) while Paris->Le Creusot->Lyon survives.
-        intermediates = stn.transfer_stations(o_canon, d_canon)[: self.MAX_INTERMEDIATES]
+        intermediates = self._transfer_candidates(
+            o_canon, d_canon, trip_date, include_ter=include_paid)[: self.MAX_INTERMEDIATES]
         if intermediates:
             _dep = departure_after
             _arr = arrival_before
