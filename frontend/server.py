@@ -197,6 +197,12 @@ def api_broadcast():
 
 
 def _trip_to_dict(trip) -> dict:
+    if trip.is_free:
+        price_display, price_estimated = "MAX", False
+    else:
+        from network.fares import estimate_fare
+        f = estimate_fare(str(trip.origin), str(trip.destination), trip.carrier)
+        price_display, price_estimated = f.display, (not f.exact)
     return {
         "train_number": trip.train_number,
         "origin": str(trip.origin),
@@ -206,7 +212,9 @@ def _trip_to_dict(trip) -> dict:
         "arrival_time": trip.arrival_time.strftime("%H:%M"),
         "duration_min": int(trip.duration.total_seconds() // 60),
         "is_free": trip.is_free,
-        "price_display": trip.price_display,
+        "carrier": trip.carrier,
+        "price_display": price_display,
+        "price_estimated": price_estimated,
         "axe": trip.axe,
         "entity": trip.entity,
     }
@@ -223,6 +231,7 @@ def _composite_to_dict(comp: CompositeTrip) -> dict:
         "departure_time": comp.departure_time.strftime("%H:%M"),
         "arrival_time": comp.arrival_time.strftime("%H:%M"),
         "price_display": comp.price_display,
+        "price_estimated": (not comp.total_fare.exact) and not comp.is_fully_max,
         "origin": comp.origin,
         "destination": comp.destination,
         "is_descentre": comp.is_descentre,

@@ -145,11 +145,35 @@ def transfer_stations(origin: str, destination: str) -> List[str]:
                   if m not in (o, d) and d in g.get(m, []))
 
 
-# coordinates are kept only for drawing the map, never for routing
+# coordinates are kept only for the map and for fare *estimation* (per-km),
+# never for routing decisions (those are exact, stop-wise).
 def coords(name: str) -> Optional[Tuple[float, float]]:
     canon = resolve(name) or name
     c = _data()["coords"].get(canon)
     return (c[0], c[1]) if c else None
+
+
+def uic(name: str) -> Optional[str]:
+    """UIC8 code for a station, if known — the join key to fare datasets."""
+    canon = resolve(name) or name
+    return _data().get("uic", {}).get(canon)
+
+
+def distance_km(a: str, b: str) -> Optional[float]:
+    """Great-circle distance between two stations (km), if both have coords.
+
+    Used only to *estimate* fares per kilometre when no exact tariff is
+    known — not for routing."""
+    import math
+    ca, cb = coords(a), coords(b)
+    if not ca or not cb:
+        return None
+    (lat1, lon1), (lat2, lon2) = ca, cb
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
 
 
 # ---------------------------------------------------------------------------
