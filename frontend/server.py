@@ -225,6 +225,8 @@ def _composite_to_dict(comp: CompositeTrip) -> dict:
         "price_display": comp.price_display,
         "origin": comp.origin,
         "destination": comp.destination,
+        "is_descentre": comp.is_descentre,
+        "booked_to": comp.booked_to,
     }
 
 

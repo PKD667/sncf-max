@@ -37,19 +37,50 @@ fetch('/api/stations').then(function(r){return r.json()}).then(function(data){
     STATIONS.forEach(function(s){var o=document.createElement('option');
       o.value=s.name;o.text=s.display;if(s.name===def)o.selected=true;e.appendChild(o)});}
   pop('origin','PARIS (intramuros)');pop('destination','LYON (intramuros)');
-  document.querySelector('input[name=date]').value=ymd(new Date(Date.now()+7*86400000));
+  // default to today, and only show trips leaving after right now
+  var now=new Date();
+  document.querySelector('input[name=date]').value=localDay(now);
+  document.querySelector('input[name=dep_after]').value=hhmm(now);
+  // keep the "after now" filter only while the date is still today
+  document.querySelector('input[name=date]').addEventListener('change',function(){
+    var n=new Date();
+    document.querySelector('input[name=dep_after]').value=(this.value===localDay(n))?hhmm(n):'';
+  });
   drawStationMarkers();
 }).catch(function(e){console.error('station load failed',e)});
 
+function pad(n){return (n<10?'0':'')+n}
+function localDay(d){return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())}
+function hhmm(d){return pad(d.getHours())+':'+pad(d.getMinutes())}
+
+// ctrl/cmd+click two map dots to set origin then destination and search
+var _pickOrigin=null;
+function pickStation(name){
+  var os=document.querySelector('select[name=origin]'),ds=document.querySelector('select[name=destination]');
+  if(_pickOrigin===null){
+    _pickOrigin=name;os.value=name;
+    document.getElementById('st').textContent='origin: '+disp(name)+' — ctrl+click a destination';
+  }else{
+    ds.value=name;_pickOrigin=null;search();
+  }
+}
+
+var _markersDrawn=false;
 function drawStationMarkers(){
-  if(!map)return;
-  for(var k in C){L.circleMarker(C[k],{radius:3,fillColor:'#3730a3',color:'#fff',weight:1,fillOpacity:0.7}).bindTooltip(disp(k)).addTo(map)}
+  if(!map||_markersDrawn||!Object.keys(C).length)return;
+  _markersDrawn=true;
+  Object.keys(C).forEach(function(name){
+    L.circleMarker(C[name],{radius:3,fillColor:'#4338ca',color:'#fff',weight:1,fillOpacity:0.8})
+      .bindTooltip(disp(name)+' — ctrl+click to pick')
+      .on('click',function(e){if(e.originalEvent.ctrlKey||e.originalEvent.metaKey){pickStation(name)}})
+      .addTo(map);
+  });
 }
 
 try{setTimeout(function(){
   var L=window.L;if(!L)return;
   map=L.map('map').setView([46.5,2.5],6);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{attribution:'&copy;CARTO'}).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{attribution:'&copy;CARTO'}).addTo(map);
   routeLayer=L.layerGroup().addTo(map);
   drawStationMarkers();
 },800)}catch(e){console.log('map disabled')}
@@ -176,14 +207,24 @@ function render(d){
   var freeDc=d.decompositions.filter(function(c){return c.is_fully_max});
   var paidDc=d.decompositions.filter(function(c){return !c.is_fully_max});
   var allDirect = d.direct_free.slice();
-  // merge descentres into direct list with a note
-  var descSeen = {}; d.direct_free.forEach(function(t){descSeen[t.trip_key||t.train_number+':'+t.departure_time]=true});
+  // merge descentres into direct list, shown as origin -> target (where you
+  // get off), noting the train is booked through to a later terminus
+  var descSeen = {}; d.direct_free.forEach(function(t){descSeen[t.train_number+':'+t.departure_time]=true});
   (d.descentres||[]).forEach(function(c){
-    var t = c.legs[0];
-    if(!descSeen[t.trip_key||t.train_number+':'+t.departure_time]){
-      t._descentre = true; // mark for display
-      allDirect.push(t);
-    }
+    var booked = c.legs[0];
+    if(descSeen[booked.train_number+':'+c.departure_time]) return;
+    allDirect.push({
+      train_number: booked.train_number,
+      origin: c.origin,
+      destination: c.destination,        // the target — where you get off
+      departure_date: booked.departure_date,
+      departure_time: c.departure_time,
+      arrival_time: c.arrival_time,       // arrival at the target
+      duration_min: c.total_duration_min,
+      is_free: true,
+      _descentre: true,
+      booked_to: c.booked_to
+    });
   });
   document.getElementById('sc').innerHTML=
     '<span class=\"tag tag-m\">direct: '+d.direct_free.length+'</span> '+
@@ -225,5 +266,5 @@ function renderHunt(origin,trips){
   document.getElementById('fl').innerHTML=h||'<div class=e>none</div>';
 }
 
-function trH(t){return '<div class=tr onclick=\"showTrip('+JSON.stringify(t).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span><span class=\"tag tag-m\">'+t.train_number+'</span><span class=t-route>'+trunc(disp(t.origin),18)+' &rarr; '+trunc(disp(t.destination),18)+'</span><span class=stat-d>'+t.duration_min+'m</span></div>'}
+function trH(t){var tag=t._descentre?'<span class=\"tag tag-c\" title=\"book to '+disp(t.booked_to)+', get off here\">desc</span>':'<span class=\"tag tag-m\">'+t.train_number+'</span>';var note=t._descentre?'<span class=stat-d title=\"booked through to '+disp(t.booked_to)+'\">&darr;'+trunc(disp(t.booked_to),12)+'</span>':'<span class=stat-d>'+t.duration_min+'m</span>';return '<div class=tr onclick=\"showTrip('+JSON.stringify(t).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span>'+tag+'<span class=t-route>'+trunc(disp(t.origin),18)+' &rarr; '+trunc(disp(t.destination),18)+'</span>'+note+'</div>'}
 function dcH(c){var L=c.legs.map(function(l){return trunc(disp(l.origin),9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(disp(c.destination),9)+'('+c.arrival_time+')';var cls=c.is_fully_max?'tag-m':'tag-p',label=c.is_fully_max?(c.max_legs+'M'):(c.max_legs+'M+'+c.paid_legs+'P');return '<div class=tr onclick=\"showComposite('+JSON.stringify(c).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class=\"tag '+cls+'\">'+label+'</span><span class=t-route>'+L+'</span><span class=stat-d>'+c.total_duration_min+'m</span></div>'}

@@ -44,14 +44,19 @@ class TripLeg:
 @dataclass
 class CompositeTrip:
     legs: List[TripLeg]
+    # Descentres ("book longer, get off early"): the train rides past the
+    # target, so the journey that matters ends where you alight, not at the
+    # booked terminus.  When set, these override destination/arrival_time.
+    alight_station: Optional[str] = None
+    alight_time: Optional[time] = None
 
     @property
     def total_duration(self) -> timedelta:
         if not self.legs:
             return timedelta()
         d = datetime.combine(self.legs[0].trip.departure_date, self.legs[0].trip.departure_time)
-        a = datetime.combine(self.legs[-1].trip.departure_date, self.legs[-1].trip.arrival_time)
-        if self.legs[-1].trip.arrival_time < self.legs[-1].trip.departure_time:
+        a = datetime.combine(self.legs[-1].trip.departure_date, self.arrival_time)
+        if self.arrival_time < self.legs[0].trip.departure_time:
             a += timedelta(days=1)
         return a - d
 
@@ -99,7 +104,19 @@ class CompositeTrip:
 
     @property
     def destination(self) -> str:
+        if self.alight_station:
+            return self.alight_station
         return str(self.legs[-1].trip.destination) if self.legs else ""
+
+    @property
+    def booked_to(self) -> str:
+        """Where the ticket actually runs to (differs from destination only
+        for descentres, where you get off early at the target)."""
+        return str(self.legs[-1].trip.destination) if self.legs else ""
+
+    @property
+    def is_descentre(self) -> bool:
+        return self.alight_station is not None
 
     @property
     def departure_date(self) -> date:
@@ -111,6 +128,8 @@ class CompositeTrip:
 
     @property
     def arrival_time(self) -> time:
+        if self.alight_time:
+            return self.alight_time
         return self.legs[-1].trip.arrival_time if self.legs else time(0, 0)
 
     @property
@@ -153,17 +172,17 @@ class TripDecomposer:
         self._client = SNCFMaxClient(config=self.config)
         self._workers = max_workers
         self._cache: Dict[str, List[Trip]] = {}
-        self._stops_cache: Dict[str, Set[str]] = {}
+        self._stops_cache: Dict[str, List[Tuple[str, str]]] = {}
 
     def _cache_key(self, origin: str, destination: str, date: date, only_max: bool) -> str:
         return f"{origin}|{destination}|{date}|{only_max}"
 
-    def _ordered_stops(self, train_no: str, trip_date: date) -> List[str]:
-        """A train's stops on a date, in real travel order (cached).
+    def _ordered_stops(self, train_no: str, trip_date: date) -> List[Tuple[str, str]]:
+        """A train's stops on a date as (station, HH:MM), in travel order.
 
         Reconstructed from all the train's (origine, destination) records,
         ordered by time — the exact, stop-wise truth used to decide where you
-        can get on and off.
+        can get on and off, and when.  Cached.
         """
         key = f"{train_no}|{trip_date}"
         if key not in self._stops_cache:
@@ -174,12 +193,21 @@ class TripDecomposer:
                 for station_key, time_key in (("origine", "heure_depart"),
                                               ("destination", "heure_arrivee")):
                     s = record.get(station_key)
-                    t = _sort_key(record.get(time_key) or "")
-                    if s and (s not in first_seen or t < first_seen[s]):
-                        first_seen[s] = t
-            self._stops_cache[key] = [
-                s for s, _ in sorted(first_seen.items(), key=lambda kv: kv[1])]
+                    hhmm = record.get(time_key) or ""
+                    if s and (s not in first_seen or _sort_key(hhmm) < _sort_key(first_seen[s])):
+                        first_seen[s] = hhmm
+            self._stops_cache[key] = sorted(
+                first_seen.items(), key=lambda kv: _sort_key(kv[1]))
         return self._stops_cache[key]
+
+    @staticmethod
+    def _pos(stops: List[Tuple[str, str]], name: str) -> int:
+        up = name.upper()
+        for i, (s, _) in enumerate(stops):
+            su = s.upper()
+            if up == su or up in su or su in up:
+                return i
+        return -1
 
     def _passes_through(self, trip: Trip, target: str, trip_date: date) -> bool:
         """Does *trip*'s train reach *target* strictly between where you board
@@ -192,19 +220,21 @@ class TripDecomposer:
         trip — fails, because you can't ride past your ticket.
         """
         stops = self._ordered_stops(trip.train_number, trip_date)
-
-        def pos(name: str) -> int:
-            up = name.upper()
-            for i, s in enumerate(stops):
-                su = s.upper()
-                if up == su or up in su or su in up:
-                    return i
-            return -1
-
-        o = pos(str(trip.origin))
-        x = pos(str(trip.destination))
-        t = pos(target)
+        o = self._pos(stops, str(trip.origin))
+        x = self._pos(stops, str(trip.destination))
+        t = self._pos(stops, target)
         return o >= 0 and x >= 0 and t >= 0 and o < t < x
+
+    def _arrival_at(self, trip: Trip, target: str, trip_date: date) -> Optional[time]:
+        """Clock time the train reaches *target* (for descentre filtering)."""
+        stops = self._ordered_stops(trip.train_number, trip_date)
+        i = self._pos(stops, target)
+        if i < 0 or not stops[i][1]:
+            return None
+        try:
+            return datetime.strptime(stops[i][1], "%H:%M").time()
+        except ValueError:
+            return None
 
     def _fetch(self, origin: str, destination: str, trip_date: date,
                only_max: bool = True) -> List[Trip]:
@@ -337,7 +367,9 @@ class TripDecomposer:
                 return max_alts[0]
         return alts[0] if alts else None
 
-    def find_descentres(self, origin: str, target: str, trip_date: date) -> List[CompositeTrip]:
+    def find_descentres(self, origin: str, target: str, trip_date: date,
+                        departure_after: Optional[time] = None,
+                        arrival_before: Optional[time] = None) -> List[CompositeTrip]:
         """Book a longer MAX trip and get off early at the target stop.
 
         Stop-wise and exact: a candidate is a MAX trip origin->X whose train
@@ -345,6 +377,10 @@ class TripDecomposer:
         real stop list).  We prefilter X to stations rideable from *both* the
         origin and the target — i.e. plausibly past the target — then confirm
         each train truly passes through the target before keeping it.
+
+        Time filters apply to the journey you actually take: *departure_after*
+        to when you leave the origin, *arrival_before* to when you reach the
+        target (where you get off), not the train's booked terminus.
         """
         origin_full = get_station_name(origin)
         target_full = get_station_name(target)
@@ -367,13 +403,16 @@ class TripDecomposer:
             trip_date=trip_date, only_available=True, workers=self._workers)
 
         # One candidate trip per (train_no), skipping trips already going
-        # straight to the target (those show up under DIRECT).
+        # straight to the target (those show up under DIRECT) and those that
+        # leave too early for the requested window.
         candidates: Dict[str, Trip] = {}
         for _dest, trips in free_dict.items():
             for trip in trips:
                 if not trip.is_free:
                     continue
                 if str(trip.destination).upper() == t_canon.upper():
+                    continue
+                if departure_after and trip.departure_time < departure_after:
                     continue
                 candidates.setdefault(trip.train_number, trip)
 
@@ -389,8 +428,16 @@ class TripDecomposer:
                     continue
                 # the train must reach the target *before* its booked
                 # terminus, so you can actually get off there
-                if self._passes_through(trip, t_canon, trip_date):
-                    results.append(CompositeTrip(legs=[TripLeg(trip=trip, is_max=True)]))
+                if not self._passes_through(trip, t_canon, trip_date):
+                    continue
+                alight = self._arrival_at(trip, t_canon, trip_date)
+                if arrival_before and alight and alight > arrival_before:
+                    continue
+                results.append(CompositeTrip(
+                    legs=[TripLeg(trip=trip, is_max=True)],
+                    alight_station=t_canon,
+                    alight_time=alight,
+                ))
 
         results.sort(key=lambda c: c.score)
         return results
