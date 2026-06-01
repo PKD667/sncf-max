@@ -174,6 +174,7 @@ def search(
         # also find "descentres" — book longer MAX trip, get off at target
         result.descentres = decomposer.find_descentres(
             origin=origin_full, target=dest_full, trip_date=trip_date,
+            departure_after=departure_after, arrival_before=arrival_before,
         )
 
     return result
