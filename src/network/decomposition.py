@@ -27,6 +27,14 @@ MIN_CONNECTION = 15
 MAX_CONNECTION = 120
 
 
+def _sort_key(hhmm: str) -> str:
+    """Order stops by clock time, pushing after-midnight times to the end so a
+    train running e.g. 22:50 -> 00:40 keeps its real stop order."""
+    if not hhmm:
+        return "z"
+    return ("1" + hhmm) if hhmm < "04:00" else ("0" + hhmm)
+
+
 @dataclass
 class TripLeg:
     trip: Trip
@@ -150,30 +158,53 @@ class TripDecomposer:
     def _cache_key(self, origin: str, destination: str, date: date, only_max: bool) -> str:
         return f"{origin}|{destination}|{date}|{only_max}"
 
-    def _train_stops(self, train_no: str, trip_date: date) -> Set[str]:
-        """Every station a given train stops at on a date (cached).
+    def _ordered_stops(self, train_no: str, trip_date: date) -> List[str]:
+        """A train's stops on a date, in real travel order (cached).
 
-        Reconstructed from all the train's (origine, destination) records —
-        the exact, stop-wise truth used to tell a descentre apart from a
-        genuine change-of-train detour.
+        Reconstructed from all the train's (origine, destination) records,
+        ordered by time — the exact, stop-wise truth used to decide where you
+        can get on and off.
         """
         key = f"{train_no}|{trip_date}"
         if key not in self._stops_cache:
             resp = self._client.get_trips_raw(
                 trip_date=trip_date, only_available=False, limit=100, train_no=train_no)
-            stops: Set[str] = set()
+            first_seen: Dict[str, str] = {}
             for record in resp.get("results", []):
-                for field in ("origine", "destination"):
-                    s = record.get(field)
-                    if s:
-                        stops.add(s)
-            self._stops_cache[key] = stops
+                for station_key, time_key in (("origine", "heure_depart"),
+                                              ("destination", "heure_arrivee")):
+                    s = record.get(station_key)
+                    t = _sort_key(record.get(time_key) or "")
+                    if s and (s not in first_seen or t < first_seen[s]):
+                        first_seen[s] = t
+            self._stops_cache[key] = [
+                s for s, _ in sorted(first_seen.items(), key=lambda kv: kv[1])]
         return self._stops_cache[key]
 
-    @staticmethod
-    def _stops_include(stops: Set[str], target: str) -> bool:
-        up = target.upper()
-        return any(up in s.upper() or s.upper() in up for s in stops)
+    def _passes_through(self, trip: Trip, target: str, trip_date: date) -> bool:
+        """Does *trip*'s train reach *target* strictly between where you board
+        (its origin) and where your ticket ends (its destination)?
+
+        This is the single test behind both descentres (book this trip, get
+        off early at the target) and detour redundancy (if the first leg
+        already passes the target, you'd never change trains).  A target that
+        sits *after* the booked destination — e.g. Marseille on a Lyon->Valence
+        trip — fails, because you can't ride past your ticket.
+        """
+        stops = self._ordered_stops(trip.train_number, trip_date)
+
+        def pos(name: str) -> int:
+            up = name.upper()
+            for i, s in enumerate(stops):
+                su = s.upper()
+                if up == su or up in su or su in up:
+                    return i
+            return -1
+
+        o = pos(str(trip.origin))
+        x = pos(str(trip.destination))
+        t = pos(target)
+        return o >= 0 and x >= 0 and t >= 0 and o < t < x
 
     def _fetch(self, origin: str, destination: str, trip_date: date,
                only_max: bool = True) -> List[Trip]:
@@ -271,15 +302,15 @@ class TripDecomposer:
                 for future in as_completed(futures):
                     raw_detours.extend(future.result())
 
-            # Drop detours whose first leg already passes through the
-            # destination (redundant with a descentre).  Verify exactly
-            # against each first-leg train's real stop list, in parallel.
+            # Drop detours whose first-leg ticket already passes through the
+            # destination (you'd just get off there — a descentre, not a
+            # change of trains).  Verified exactly against each first-leg
+            # train's real ordered stops, prefetched in parallel.
             leg1_trains = {c.legs[0].trip.train_number for c in raw_detours}
             with ThreadPoolExecutor(max_workers=self._workers) as ex:
-                list(ex.map(lambda tn: self._train_stops(tn, trip_date), leg1_trains))
+                list(ex.map(lambda tn: self._ordered_stops(tn, trip_date), leg1_trains))
             for c in raw_detours:
-                stops = self._train_stops(c.legs[0].trip.train_number, trip_date)
-                if not self._stops_include(stops, d_canon):
+                if not self._passes_through(c.legs[0].trip, d_canon, trip_date):
                     alternatives.append(c)
 
         # Sort and deduplicate
@@ -348,16 +379,17 @@ class TripDecomposer:
 
         results: List[CompositeTrip] = []
         with ThreadPoolExecutor(max_workers=self._workers) as ex:
-            futures = {ex.submit(self._train_stops, tn, trip_date): trip
+            futures = {ex.submit(self._ordered_stops, tn, trip_date): trip
                        for tn, trip in candidates.items()}
             for future in as_completed(futures):
                 trip = futures[future]
                 try:
-                    stops = future.result()
+                    future.result()
                 except Exception:
                     continue
-                # does the train actually stop at the target on the way?
-                if self._stops_include(stops, t_canon):
+                # the train must reach the target *before* its booked
+                # terminus, so you can actually get off there
+                if self._passes_through(trip, t_canon, trip_date):
                     results.append(CompositeTrip(legs=[TripLeg(trip=trip, is_max=True)]))
 
         results.sort(key=lambda c: c.score)
