@@ -6,6 +6,7 @@ with a map of France showing:
   - Free trips for the selected route
   - Fully-MAX decomposed alternatives
   - Quick filters (dead-hour, long-distance, weekend)
+  - SNCF Connect integration for booking and exact prices (PAM-gated)
 
 Usage:
     python3 frontend/server.py
@@ -16,9 +17,11 @@ from __future__ import annotations
 
 import json
 import sys
+import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+import threading
 
 # ensure src/ is importable
 _src = Path(__file__).resolve().parent.parent / "src"
@@ -34,6 +37,59 @@ from network import stations as stn
 app = Flask(__name__, static_folder=None)
 
 HERE = Path(__file__).resolve().parent
+
+# ---------------------------------------------------------------------------
+# PAM User & SNCF Connect Credential Storage
+# ---------------------------------------------------------------------------
+
+# Per-user credential storage (in-memory for now; can be backed by file/db)
+# Key: PAM username (from X-Remote-User header)
+# Value: {"email": "...", "password": "..."}
+_user_credentials: dict[str, dict] = {}
+_credentials_lock = threading.Lock()
+
+# Data directory for persistent storage
+_DATA_DIR = Path(os.environ.get("MAX_DATA_DIR", "/tmp/max-data"))
+_DATA_DIR.mkdir(parents=True, exist_ok=True)
+_CREDS_FILE = _DATA_DIR / "sncf_credentials.json"
+
+
+def _load_credentials() -> None:
+    """Load credentials from disk."""
+    global _user_credentials
+    if _CREDS_FILE.exists():
+        try:
+            with open(_CREDS_FILE, "r") as f:
+                _user_credentials = json.load(f)
+        except Exception:
+            _user_credentials = {}
+
+
+def _save_credentials() -> None:
+    """Save credentials to disk."""
+    with _credentials_lock:
+        try:
+            with open(_CREDS_FILE, "w") as f:
+                json.dump(_user_credentials, f)
+        except Exception:
+            pass
+
+
+# Load on startup
+_load_credentials()
+
+
+def _get_pam_user() -> Optional[str]:
+    """Extract PAM username from X-Remote-User header (set by nginx auth_request)."""
+    return request.headers.get("X-Remote-User")
+
+
+def _require_auth() -> str:
+    """Require PAM authentication, return username or raise 401."""
+    user = _get_pam_user()
+    if not user:
+        return jsonify({"error": "authentication required", "pam_required": True}), 401
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +158,7 @@ def api_train_stops():
         train_no=train_no,
     )
 
-    stops: Dict[str, dict] = {}
+    stops: dict = {}
     for r in response.get("results", []):
         o = r.get("origine", "")
         d = r.get("destination", "")
@@ -192,6 +248,188 @@ def api_broadcast():
 
 
 # ---------------------------------------------------------------------------
+# SNCF Connect Authentication Endpoints (PAM-gated)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/auth/sncf/status")
+def api_sncf_auth_status():
+    """Check if user has SNCF Connect credentials configured."""
+    user = _require_auth()
+    if isinstance(user, tuple):
+        return user
+
+    with _credentials_lock:
+        has_creds = user in _user_credentials
+        creds = _user_credentials.get(user, {})
+
+    return jsonify({
+        "authenticated": True,
+        "pam_user": user,
+        "sncf_connected": has_creds,
+        "email": creds.get("email") if has_creds else None,
+    })
+
+
+@app.route("/api/auth/sncf/set", methods=["POST"])
+def api_sncf_auth_set():
+    """Store SNCF Connect credentials for the current PAM user."""
+    user = _require_auth()
+    if isinstance(user, tuple):
+        return user
+
+    data = request.get_json(silent=True) or {}
+    email = data.get("email", "").strip()
+    password = data.get("password", "").strip()
+
+    if not email or not password:
+        return jsonify({"error": "email and password required"}), 400
+
+    # Basic email validation
+    if "@" not in email:
+        return jsonify({"error": "invalid email"}), 400
+
+    with _credentials_lock:
+        _user_credentials[user] = {"email": email, "password": password}
+        _save_credentials()
+
+    return jsonify({"success": True, "email": email})
+
+
+@app.route("/api/auth/sncf/delete", methods=["POST"])
+def api_sncf_auth_delete():
+    """Remove SNCF Connect credentials for the current PAM user."""
+    user = _require_auth()
+    if isinstance(user, tuple):
+        return user
+
+    with _credentials_lock:
+        if user in _user_credentials:
+            del _user_credentials[user]
+            _save_credentials()
+            return jsonify({"success": True})
+        return jsonify({"error": "no credentials stored"}), 404
+
+
+# ---------------------------------------------------------------------------
+# Booking Endpoints (requires SNCF Connect credentials)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/booking/book", methods=["POST"])
+def api_booking_book():
+    """Book a TGV Max trip using stored SNCF Connect credentials."""
+    user = _require_auth()
+    if isinstance(user, tuple):
+        return user
+
+    with _credentials_lock:
+        creds = _user_credentials.get(user)
+    if not creds:
+        return jsonify({"error": "SNCF Connect credentials not configured"}), 400
+
+    data = request.get_json(silent=True) or {}
+    trip_data = data.get("trip")
+    if not trip_data:
+        return jsonify({"error": "trip data required"}), 400
+
+    # Build Trip object from request
+    try:
+        from models import Trip, Station
+        trip = Trip(
+            train_number=trip_data.get("train_number", ""),
+            origin=Station(name=trip_data.get("origin", "")),
+            destination=Station(name=trip_data.get("destination", "")),
+            departure_date=datetime.strptime(trip_data.get("departure_date", ""), "%Y-%m-%d").date(),
+            departure_time=datetime.strptime(trip_data.get("departure_time", ""), "%H:%M").time(),
+            arrival_time=datetime.strptime(trip_data.get("arrival_time", ""), "%H:%M").time(),
+            available_for_max=trip_data.get("available_for_max", "UNKNOWN"),
+            axe=trip_data.get("axe"),
+            entity=trip_data.get("entity"),
+            price_cents=trip_data.get("price_cents"),
+        )
+    except Exception as e:
+        return jsonify({"error": f"invalid trip data: {e}"}), 400
+
+    # Attempt booking using stored credentials
+    try:
+        from booking.auth import load_or_login
+        from booking.booking import book_sync
+        from config import SNCFConfig, default_config
+
+        config = default_config
+        session = load_or_login(creds["email"], creds["password"], config)
+        result = book_sync(trip, session=session, config=config)
+
+        return jsonify({
+            "success": result.is_success,
+            "status": result.status.value,
+            "message": result.message,
+            "confirmation": result.confirmation_number,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+@app.route("/api/booking/auto", methods=["POST"])
+def api_booking_auto():
+    """Automatically find and book the best TGV Max trip."""
+    user = _require_auth()
+    if isinstance(user, tuple):
+        return user
+
+    with _credentials_lock:
+        creds = _user_credentials.get(user)
+    if not creds:
+        return jsonify({"error": "SNCF Connect credentials not configured"}), 400
+
+    data = request.get_json(silent=True) or {}
+    origin = data.get("origin", "")
+    destination = data.get("destination", "")
+    date_str = data.get("date", "")
+    preferred_time = data.get("preferred_time", "")
+
+    if not origin or not destination or not date_str:
+        return jsonify({"error": "origin, destination, and date required"}), 400
+
+    try:
+        trip_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify({"error": "bad date format (use YYYY-MM-DD)"}), 400
+
+    try:
+        from booking.booking import auto_book
+        from models import UserCredentials
+        from config import default_config
+
+        credentials = UserCredentials(email=creds["email"], password=creds["password"])
+        result = auto_book(
+            origin=origin,
+            destination=destination,
+            trip_date=trip_date,
+            credentials=credentials,
+            preferred_time=preferred_time if preferred_time else None,
+            config=default_config,
+        )
+
+        return jsonify({
+            "success": result.is_success,
+            "status": result.status.value,
+            "message": result.message,
+            "confirmation": result.confirmation_number,
+            "trip": {
+                "train_number": result.trip.train_number,
+                "origin": str(result.trip.origin),
+                "destination": str(result.trip.destination),
+                "departure_time": result.trip.departure_time.strftime("%H:%M"),
+                "arrival_time": result.trip.arrival_time.strftime("%H:%M"),
+            } if result.trip else None,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+# ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
 
@@ -263,8 +501,14 @@ def _serialize_result(result: SearchResult) -> dict:
 
 
 def main(port: int = 5000, debug: bool = False):
-    print(f"\n  TGV Max frontend: http://127.0.0.1:{port}\n")
-    app.run(host="127.0.0.1", port=port, debug=debug)
+    # Bind address is configurable so the app can be published by a reverse
+    # proxy on another host. It stays 127.0.0.1 by default, so running this
+    # directly for development is unchanged and never accidentally exposed.
+    import os
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", port))
+    print(f"\n  TGV Max frontend: http://{host}:{port}\n")
+    app.run(host=host, port=port, debug=debug)
 
 
 if __name__ == "__main__":

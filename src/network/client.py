@@ -10,6 +10,7 @@ import logging
 
 from models import Trip, Station, TripStatus, SearchCriteria
 from config import SNCFConfig, default_config, get_station_name
+from network.fares import estimate_fare
 
 logger = logging.getLogger(__name__)
 
@@ -160,16 +161,13 @@ class SNCFMaxClient:
     # ------------------------------------------------------------------
 
     def enrich_with_prices(self, trips: List[Trip]) -> List[Trip]:
-        """Fill in price_cents for paid trips using Navitia API (if configured)."""
+        """Fill in price_cents for paid trips using the fare estimation system."""
         for trip in trips:
             if trip.is_free or trip.price_cents is not None:
                 continue
-            price = fetch_price(
-                str(trip.origin), str(trip.destination),
-                trip.departure_date, trip.departure_time.strftime("%H:%M"),
-            )
-            if price is not None:
-                trip.price_cents = price
+            # Use the fare estimation system which handles exact tariffs vs per-km estimates
+            f = estimate_fare(str(trip.origin), str(trip.destination), trip.carrier)
+            trip.price_cents = f.min_cents
         return trips
 
     def search_all_trips(
