@@ -2,6 +2,7 @@
 var STATIONS=[],map=null,routeLayer=null;
 var C={};          // API name -> [lat,lon]  (from backend)
 var DISP={};       // API name -> pretty display label (from backend)
+var SNCF_AUTH=null; // SNCF Connect auth status
 
 // helpers
 function latlng(station){
@@ -47,6 +48,7 @@ fetch('/api/stations').then(function(r){return r.json()}).then(function(data){
     document.querySelector('input[name=dep_after]').value=(this.value===localDay(n))?hhmm(n):'';
   });
   drawStationMarkers();
+  checkSncfAuth();
 }).catch(function(e){console.error('station load failed',e)});
 
 function pad(n){return (n<10?'0':'')+n}
@@ -84,6 +86,65 @@ try{setTimeout(function(){
   routeLayer=L.layerGroup().addTo(map);
   drawStationMarkers();
 },800)}catch(e){console.log('map disabled')}
+
+// SNCF Connect Authentication
+function checkSncfAuth(){
+  fetch('/api/auth/sncf/status').then(function(r){return r.json()}).then(function(data){
+    SNCF_AUTH=data;
+    renderAuthUI(data);
+  }).catch(function(){renderAuthUI({sncf_connected:false,pam_user:null})});
+}
+
+function renderAuthUI(data){
+  var box=document.getElementById('authBox');
+  if(!box) return;
+  if(data.sncf_connected){
+    box.innerHTML='<h2>SNCF CONNECT <span style="color:var(--g)">●</span> <span style="color:var(--dim)">('+data.email+')</span> <button onclick="showSncfModal()">Change</button></h2>';
+  }else{
+    box.innerHTML='<h2>SNCF CONNECT <span style="color:var(--r)">○</span> <button onclick="showSncfModal()">Connect</button></h2>';
+  }
+}
+
+function showSncfModal(){
+  var html='<div style=line-height:1.8><h3 style="margin-bottom:8px">SNCF Connect</h3>';
+  if(SNCF_AUTH && SNCF_AUTH.sncf_connected){
+    html+='<p style="color:var(--dim);font-size:11px;margin-bottom:8px">Connected as: <b>'+SNCF_AUTH.email+'</b></p>';
+    html+='<button onclick="disconnectSncf()" style="background:var(--r);color:white;border-color:var(--r)">Disconnect</button>';
+  }else{
+    html+='<p style="color:var(--dim);font-size:11px;margin-bottom:8px">Enter your SNCF Connect credentials to enable booking and exact prices.</p>';
+    html+='<div class=row style="margin-top:4px"><input type=email name=sncf_email placeholder="Email" required style="flex:1"></div>';
+    html+='<div class=row style="margin-top:4px"><input type=password name=sncf_password placeholder="Password" required style="flex:1"></div>';
+    html+='<div class=row style="margin-top:8px"><button class=prim onclick="saveSncfCreds()">Save</button></div>';
+  }
+  html+='</div>';
+  show('detail');document.getElementById('dt').innerHTML=html;
+}
+
+function saveSncfCreds(){
+  var email=document.querySelector('input[name=sncf_email]').value;
+  var password=document.querySelector('input[name=sncf_password]').value;
+  if(!email||!password){alert('Email and password required');return;}
+  loading(true,'saving...');
+  fetch('/api/auth/sncf/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,password:password})})
+    .then(function(r){return r.json()}).then(function(data){
+      loading(false);
+      if(data.success){
+        checkSncfAuth();
+        hideDetail();
+      }else{alert(data.error||'Failed to save');}
+    }).catch(function(){loading(false);alert('Request failed')});
+}
+
+function disconnectSncf(){
+  if(!confirm('Disconnect from SNCF Connect?')) return;
+  loading(true,'disconnecting...');
+  fetch('/api/auth/sncf/delete',{method:'POST'})
+    .then(function(r){return r.json()}).then(function(data){
+      loading(false);
+      if(data.success){checkSncfAuth();hideDetail();}
+      else{alert(data.error||'Failed to disconnect');}
+    }).catch(function(){loading(false);alert('Request failed')});
+}
 
 // search
 function search(){
@@ -132,15 +193,19 @@ function showTrip(t){
   }
   show('detail');
   var html='<div style=line-height:1.8>'+
-    '<span class=\"tag tag-m\">MAX</span> '+
+    '<span class="tag tag-m">MAX</span> '+
     'Train <b style=color:var(--hi)>'+t.train_number+'</b><br>'+
     '<span style=color:var(--dim)>'+t.departure_date+'</span><br>'+
     '<div style=margin-top:4px>'+
     '<b>'+t.departure_time+'</b> '+disp(o)+'<br>'+
     '<b>'+t.arrival_time+'</b> '+disp(d)+'<br>'+
     '<span style=color:var(--dim)>'+t.duration_min+' min | '+(t.entity||'')+'</span>'+
-    '</div>'+
-    '<div id=\"stopList\" style=\"margin-top:6px;color:var(--dim);font-size:10px\">loading stops...</div>'+
+    '</div>';
+  // Add book button if SNCF connected
+  if(SNCF_AUTH && SNCF_AUTH.sncf_connected && t.is_free){
+    html+='<div style="margin-top:8px"><button class=prim onclick=\'bookTrip('+JSON.stringify(t).replace(/'/g,"\\'")+')\'>Book this trip</button></div>';
+  }
+  html+='<div id="stopList" style="margin-top:6px;color:var(--dim);font-size:10px">loading stops...</div>'+
     '</div>';
   document.getElementById('dt').innerHTML=html;
 
@@ -148,7 +213,7 @@ function showTrip(t){
   var params='train='+t.train_number+'&date='+t.departure_date;
   fetch('/api/train_stops?'+params).then(function(r){return r.json()}).then(function(s){
     var stops=s.stops||[];
-    var h='<div style=\"margin-top:4px;border-top:1px solid var(--border);padding-top:4px\">stops: ';
+    var h='<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px">stops: ';
     stops.forEach(function(s,i){
       var icon=s.type==='departure'?'&rarr;':'&larr;';
       h+='<span style=color:var(--hi)>'+s.time+'</span> '+icon+' '+trunc(disp(s.station),16)+(i<stops.length-1?' | ':'');
@@ -157,18 +222,34 @@ function showTrip(t){
     document.getElementById('stopList').innerHTML=h;
   }).catch(function(){document.getElementById('stopList').innerHTML='';});
 }
+
+function bookTrip(t){
+  if(!confirm('Book '+t.train_number+' '+disp(t.origin)+' → '+disp(t.destination)+' on '+t.departure_date+' at '+t.departure_time+'?')) return;
+  loading(true,'booking...');
+  fetch('/api/booking/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trip:t})})
+    .then(function(r){return r.json()}).then(function(data){
+      loading(false);
+      if(data.success){
+        alert('✅ Booked! Confirmation: '+(data.confirmation||'N/A'));
+        hideDetail();
+      }else{
+        alert('❌ Booking failed: '+(data.message||data.error||'Unknown error'));
+      }
+    }).catch(function(){loading(false);alert('Booking request failed')});
+}
+
 function showComposite(c){
   routeLayer.clearLayers();var L=window.L;var pts=[];
   var html='<div style=line-height:1.8>';
   c.legs.forEach(function(l,i){
     var f=latlng(l.origin),t=latlng(l.destination);
-    var legtag=l.is_free?'<span class=\"tag tag-m\">MAX</span>':'<span class=\"tag '+(l.carrier==='TER'?'tag-c':'tag-p')+'\">'+(l.carrier||'')+'</span>';
+    var legtag=l.is_free?'<span class="tag tag-m">MAX</span>':'<span class="tag '+(l.carrier==='TER'?'tag-c':'tag-p')+'">'+(l.carrier||'')+'</span>';
     html+='<span style=color:var(--dim)>leg '+(i+1)+'</span> '+legtag+' ';
     html+='Train <b style=color:var(--hi)>'+l.train_number+'</b>';
     html+=l.is_free?'':' <span style=color:var(--y)>'+(l.price_display||'')+'</span>';
     html+='<br><b>'+l.departure_time+'</b> '+disp(l.origin)+'<br><b>'+l.arrival_time+'</b> '+disp(l.destination)+'<br>';
     html+='<span style=color:var(--dim)>'+l.duration_min+'min</span><br>';
-    html+='<div id=leg'+i+'stops style=\"font-size:9px;color:var(--dim)\"></div>';
+    html+='<div id=leg'+i+'stops style="font-size:9px;color:var(--dim)"></div>';
     if(f&&t){
       var color=i===0?'#10b981':'#3730a3';
       routeLayer.addLayer(L.polyline([f,t],{color:color,weight:2,opacity:0.8}));
@@ -228,11 +309,11 @@ function render(d){
     });
   });
   document.getElementById('sc').innerHTML=
-    '<span class=\"tag tag-m\">direct: '+d.direct_free.length+'</span> '+
-    (d.descentres&&d.descentres.length?'<span class=\"tag tag-m\">descentres: '+d.descentres.length+'</span> ':'')+
-    '<span class=\"tag tag-m\">detour: '+freeDc.length+'</span> '+
-    '<span class=\"tag tag-p\">payant: '+d.direct_paid.length+'</span> '+
-    '<span class=\"tag tag-p\">detour payant: '+paidDc.length+'</span>';
+    '<span class="tag tag-m">direct: '+d.direct_free.length+'</span> '+
+    (d.descentres&&d.descentres.length?'<span class="tag tag-m">descentres: '+d.descentres.length+'</span> ':'')+
+    '<span class="tag tag-m">detour: '+freeDc.length+'</span> '+
+    '<span class="tag tag-p">payant: '+d.direct_paid.length+'</span> '+
+    '<span class="tag tag-p">detour payant: '+paidDc.length+'</span>';
 
   // DIRECT MAX (including descentres)
   show('directBox'); document.getElementById('fc').textContent='('+allDirect.length+')';
@@ -260,19 +341,19 @@ function render(d){
 function renderHunt(origin,trips){
   hide('detourBox');hide('detourPayBox');hide('payantBox');hide('descentBox');
   show('sum');show('directBox');
-  document.getElementById('sc').innerHTML='<span class=\"tag tag-m\">'+trips.length+' free from '+disp(origin)+'</span>';
+  document.getElementById('sc').innerHTML='<span class="tag tag-m">'+trips.length+' free from '+disp(origin)+'</span>';
   document.getElementById('fc').textContent='('+trips.length+')';
   var g={};trips.forEach(function(t){var d=t.destination;if(!g[d])g[d]=[];g[d].push(t)});
-  var h='';for(var d in g){h+='<div style=\"font-weight:bold;color:var(--hi);margin-top:4px\">'+disp(d)+' ('+g[d].length+')</div>';h+=g[d].slice(0,4).map(trH).join('');if(g[d].length>4)h+='<div class=e>+ '+(g[d].length-4)+' more</div>'}
+  var h='';for(var d in g){h+='<div style="font-weight:bold;color:var(--hi);margin-top:4px">'+disp(d)+' ('+g[d].length+')</div>';h+=g[d].slice(0,4).map(trH).join('');if(g[d].length>4)h+='<div class=e>+ '+(g[d].length-4)+' more</div>'}
   document.getElementById('fl').innerHTML=h||'<div class=e>none</div>';
 }
 
-function priceCell(disp_str,est,dur){var c=est?'var(--y)':'var(--g)';return '<span class=stat-d title=\"'+dur+' min\" style=\"color:'+c+'\">'+disp_str+'</span>'}
+function priceCell(disp_str,est,dur){var c=est?'var(--y)':'var(--g)';return '<span class=stat-d title="'+dur+' min" style="color:'+c+'">'+disp_str+'</span>'}
 function trH(t){
-  var tag=t._descentre?'<span class=\"tag tag-c\" title=\"book to '+disp(t.booked_to)+', get off here\">desc</span>':'<span class=\"tag tag-m\">'+t.train_number+'</span>';
+  var tag=t._descentre?'<span class="tag tag-c" title="book to '+disp(t.booked_to)+', get off here">desc</span>':'<span class="tag tag-m">'+t.train_number+'</span>';
   var last;
-  if(t._descentre) last='<span class=stat-d title=\"booked through to '+disp(t.booked_to)+'\">&darr;'+trunc(disp(t.booked_to),12)+'</span>';
+  if(t._descentre) last='<span class=stat-d title="booked through to '+disp(t.booked_to)+'">&darr;'+trunc(disp(t.booked_to),12)+'</span>';
   else if(t.is_free) last='<span class=stat-d>'+t.duration_min+'m</span>';
   else last=priceCell(t.price_display||'?',t.price_estimated,t.duration_min);
-  return '<div class=tr onclick=\"showTrip('+JSON.stringify(t).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span>'+tag+'<span class=t-route>'+trunc(disp(t.origin),18)+' &rarr; '+trunc(disp(t.destination),18)+'</span>'+last+'</div>'}
-function dcH(c){var L=c.legs.map(function(l){return trunc(disp(l.origin),9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(disp(c.destination),9)+'('+c.arrival_time+')';var cls=c.is_fully_max?'tag-m':'tag-p',label=c.is_fully_max?(c.max_legs+'M'):(c.max_legs+'M+'+c.paid_legs+'P');var last=c.is_fully_max?'<span class=stat-d>'+c.total_duration_min+'m</span>':priceCell(c.price_display||'?',c.price_estimated,c.total_duration_min);return '<div class=tr onclick=\"showComposite('+JSON.stringify(c).replace(/\"/g,'&quot;')+')\" title=\"click for detail\"><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class=\"tag '+cls+'\">'+label+'</span><span class=t-route>'+L+'</span>'+last+'</div>'}
+  return '<div class=tr onclick="showTrip('+JSON.stringify(t).replace(/\"/g,'"')+')" title="click for detail"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span>'+tag+'<span class=t-route>'+trunc(disp(t.origin),18)+' &rarr; '+trunc(disp(t.destination),18)+'</span>'+last+'</div>'}
+function dcH(c){var L=c.legs.map(function(l){return trunc(disp(l.origin),9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(disp(c.destination),9)+'('+c.arrival_time+')';var cls=c.is_fully_max?'tag-m':'tag-p',label=c.is_fully_max?(c.max_legs+'M'):(c.max_legs+'M+'+c.paid_legs+'P');var last=c.is_fully_max?'<span class=stat-d>'+c.total_duration_min+'m</span>':priceCell(c.price_display||'?',c.price_estimated,c.total_duration_min);return '<div class=tr onclick="showComposite('+JSON.stringify(c).replace(/\"/g,'"')+')" title="click for detail"><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class="tag '+cls+'">'+label+'</span><span class=t-route>'+L+'</span>'+last+'</div>'}
