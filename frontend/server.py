@@ -28,7 +28,7 @@ _src = Path(__file__).resolve().parent.parent / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, redirect, send_from_directory
 from network.core import search, broadcast, SearchResult
 from config import STATIONS, get_station_name
 from network.decomposition import CompositeTrip
@@ -37,6 +37,7 @@ from network import stations as stn
 app = Flask(__name__, static_folder=None)
 
 HERE = Path(__file__).resolve().parent
+TGVMAX_ROOT = HERE / "tgvmax"
 
 # ---------------------------------------------------------------------------
 # PAM User & SNCF Connect Credential Storage
@@ -112,6 +113,19 @@ def index() -> str:
     """Serve the single-page frontend."""
     template = HERE / "index.html"
     return template.read_text()
+
+
+@app.route("/tgvmax")
+def tgvmax_root():
+    """Keep relative links inside the bundled TGV Max site."""
+    return redirect("/tgvmax/", code=308)
+
+
+@app.route("/tgvmax/", defaults={"path": "index.html"})
+@app.route("/tgvmax/<path:path>")
+def tgvmax_site(path: str):
+    """Serve the static TGV Max site bundled from the local project."""
+    return send_from_directory(str(TGVMAX_ROOT), path)
 
 
 @app.route("/api/stations")

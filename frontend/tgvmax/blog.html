@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<!-- Mirrored from https://trainquille.fr/blog.html by HTTrack Website Copier/3.x [XR&CO], Fri, 18 Sep 2026 14:22:09 GMT -->
+<head>
+  <meta charset="UTF-8">
+  <title>Blog Trainquille • Conseils et astuces TGVmax</title>
+  <meta name="description" content="Découvrez nos articles sur les TGVmax, astuces de réservation, conseils voyage et actualités Trainquille.">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="blog.html">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com/">
+  <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&amp;display=swap" rel="stylesheet">
+  <style>
+    .blog-header {
+      text-align: center;
+      padding: 3rem 1.5rem 2rem;
+      background: linear-gradient(135deg, #e5effe 0%, #f7faff 100%);
+    }
+    .blog-header h1 {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-weight: 900;
+      color: #162032;
+      margin-bottom: 1rem;
+    }
+    .blog-header p {
+      font-size: 1.2rem;
+      color: #465068;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    .blog-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+    }
+    .blog-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 2rem;
+      margin-top: 2rem;
+    }
+    .blog-card {
+      background: white;
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 3px 28px rgba(35, 129, 247, 0.08);
+      transition: all 0.3s ease;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+    }
+    .blog-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 10px 32px rgba(35, 129, 247, 0.15);
+    }
+    .blog-card-image {
+      width: 100%;
+      height: 200px;
+      background: linear-gradient(135deg, #2381f7 0%, #5eaaff 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3rem;
+      color: white;
+    }
+    .blog-card-content {
+      padding: 1.5rem;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    .blog-card-title {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: #162032;
+      margin-bottom: 0.75rem;
+      line-height: 1.3;
+    }
+    .blog-card-excerpt {
+      color: #465068;
+      font-size: 0.95rem;
+      line-height: 1.6;
+      margin-bottom: 1rem;
+      flex: 1;
+    }
+    .blog-card-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      color: #7e9bc9;
+      padding-top: 1rem;
+      border-top: 1px solid #e3e9f3;
+    }
+    .blog-cta-banner {
+      background: linear-gradient(135deg, #2381f7 0%, #1b5ebc 100%);
+      color: white;
+      padding: 2.5rem 1.5rem;
+      border-radius: 20px;
+      text-align: center;
+      margin: 3rem 0;
+      box-shadow: 0 10px 32px rgba(35, 129, 247, 0.2);
+    }
+    .blog-cta-banner h2 {
+      font-size: 2rem;
+      font-weight: 800;
+      margin-bottom: 1rem;
+    }
+    .blog-cta-banner p {
+      font-size: 1.1rem;
+      margin-bottom: 1.5rem;
+      opacity: 0.95;
+    }
+    .blog-cta-button {
+      display: inline-block;
+      background: white;
+      color: #2381f7;
+      padding: 1rem 2.5rem;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 1.1rem;
+      text-decoration: none;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+    .blog-cta-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    }
+    .blog-empty {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: #7e9bc9;
+    }
+    .blog-loading {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: #2381f7;
+    }
+    @media (max-width: 768px) {
+      .blog-grid {
+        grid-template-columns: 1fr;
+      }
+      .blog-cta-banner h2 {
+        font-size: 1.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="blog-header">
+    <h1>📚 Blog <span class="blue-accent">Trainquille</span></h1>
+    <p>Conseils, astuces et actualités pour vos voyages TGVmax</p>
+  </header>
+
+  <div class="blog-container">
+    <!-- CTA Banner en haut -->
+    <div class="blog-cta-banner">
+      <h2>🚄 Trouvez vos TGVmax disponibles</h2>
+      <p>Découvrez toutes les places réservables en temps réel sur une carte claire</p>
+      <a href="index.html" class="blog-cta-button">Accéder à Trainquille</a>
+    </div>
+
+    <div id="blog-list" class="blog-grid">
+      <div class="blog-loading">Chargement des articles...</div>
+    </div>
+
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+    const SUPABASE_URL = 'https://cawdwlqaqnbcvbjaxjin.supabase.co/';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNhd2R3bHFhcW5iY3ZiamF4amluIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyNzkyMzksImV4cCI6MjA3Njg1NTIzOX0.cQwKaHOpYvm-KJzpTimPnf1MZEox0yb9Y-ny4GbqVKc';
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    async function loadBlogs() {
+      const blogList = document.getElementById('blog-list');
+
+      try {
+        const { data, error } = await supabaseClient
+          .from('blogs')
+          .select('*')
+          .eq('published', true)
+          .order('published_at', { ascending: false });
+
+        if (error) throw error;
+
+        if (!data || data.length === 0) {
+          blogList.innerHTML = '<div class="blog-empty">Aucun article publié pour le moment.</div>';
+          return;
+        }
+
+        blogList.innerHTML = data.map(blog => `
+          <div class="blog-card" onclick="window.location.href='blog-article.html?slug=${blog.slug}'">
+            <div class="blog-card-image">📝</div>
+            <div class="blog-card-content">
+              <h3 class="blog-card-title">${escapeHtml(blog.title)}</h3>
+              <p class="blog-card-excerpt">${escapeHtml(blog.excerpt || blog.content.substring(0, 150) + '...')}</p>
+              <div class="blog-card-meta">
+                <span>${formatDate(blog.published_at || blog.created_at)}</span>
+                <span>${blog.reading_time || Math.ceil(blog.content.length / 1000)} min</span>
+              </div>
+            </div>
+          </div>
+        `).join('');
+      } catch (error) {
+        console.error('Erreur chargement blogs:', error);
+        blogList.innerHTML = '<div class="blog-empty">Erreur lors du chargement des articles.</div>';
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function formatDate(dateString) {
+      const date = new Date(dateString);
+      return date.toLocaleDateString('fr-FR', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+    }
+
+    loadBlogs();
+  </script>
+</body>
+
+<!-- Mirrored from https://trainquille.fr/blog.html by HTTrack Website Copier/3.x [XR&CO], Fri, 18 Sep 2026 14:22:10 GMT -->
+</html>
