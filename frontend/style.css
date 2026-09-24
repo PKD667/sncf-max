@@ -5,9 +5,14 @@ body{font:12px/1.6 'Fira Mono','Liberation Mono',monospace;background:var(--bg);
 #map{width:50%;height:100%;border-right:1px solid var(--border)}
 #side{width:50%;height:100%;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;background:var(--bg)}
 h1{font:18px 'Crimson Text',serif;color:var(--hi);border-bottom:1px solid var(--border);padding-bottom:4px;display:flex;align-items:center;gap:0}
-h1 img{height:28px;opacity:0.9;margin-left:auto}
+h1 img{height:28px;opacity:0.9;margin-left:8px}
+.brand-name{white-space:nowrap}
+.site-switcher{display:flex;align-items:center;gap:4px;margin-left:auto}
+.site-button{font:10px 'Fira Mono',monospace;color:var(--b);text-decoration:none;border:1px solid var(--border);border-radius:4px;padding:3px 6px;letter-spacing:.5px;white-space:nowrap}
+.site-button:hover{background:var(--hover)}
+.site-button.current{border-color:var(--b);background:#eef2ff}
 h1 em{font-style:normal;color:var(--b);letter-spacing:1px}
-h1 span{color:var(--dim);font-size:13px;margin:0 2px}
+h1 .brand-name > span{color:var(--dim);font-size:13px;margin:0 2px}
 .box{border:1px solid var(--border);background:var(--panel);padding:10px;border-radius:6px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
 .box h2{font:12px 'Fira Mono',monospace;font-weight:bold;color:var(--hi);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
 .row{display:flex;gap:4px;flex-wrap:wrap}
