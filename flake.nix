@@ -54,6 +54,16 @@
           
           doCheck = false;
         };
+
+        # Deployable web entry point used by the NixOS site service.
+        sncf-max-web = pkgs.writeShellApplication {
+          name = "sncf-max-web";
+          runtimeInputs = [ (python.withPackages (ps: pythonDeps)) ];
+          text = ''
+            export PYTHONPATH="${self}/src:${self}:''${PYTHONPATH:-}"
+            exec python3 ${self}/frontend/server.py "$@"
+          '';
+        };
         
       in {
         # Development shell
@@ -82,6 +92,7 @@
         packages = {
           default = sncf-max;
           sncf-max = sncf-max;
+          web = sncf-max-web;
         };
         
         # App entry point
@@ -92,4 +103,3 @@
       }
     );
 }
-
