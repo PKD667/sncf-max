@@ -150,6 +150,11 @@ def search(
     if ter.has_data():
         paid = paid + ter.legs_between(origin_full, dest_full, trip_date)
 
+    # direct coach trips (BlaBlaBus/FlixBus, paid per-km estimate)
+    from network import bus
+    if bus.has_data():
+        paid = paid + bus.legs_between(origin_full, dest_full, trip_date)
+
     # apply time filters (intersection of both constraints)
     if departure_after:
         free = [t for t in free if t.departure_time >= departure_after]

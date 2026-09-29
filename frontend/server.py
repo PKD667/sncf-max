@@ -118,6 +118,12 @@ def app_js():
     return send_from_directory(str(HERE), "app.js", mimetype="application/javascript")
 
 
+@app.route("/art/<path:path>")
+def art(path: str):
+    """Hand-drawn rolling-stock illustrations (see frontend/art/)."""
+    return send_from_directory(str(HERE / "art"), path)
+
+
 @app.route("/")
 def index() -> str:
     """Serve the single-page frontend."""

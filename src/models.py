@@ -75,11 +75,12 @@ class Trip:
 
     @property
     def carrier(self) -> str:
-        """Operator class, for fare resolution: TGV / OUIGO / INTERCITES / TER.
+        """Operator class, for fare resolution: TGV / OUIGO / INTERCITES / TER / BUS.
 
         Derived from the dataset's ``entity``.  TGV Max records are TGV/IC;
-        TER and regional carriers arrive once their timetables are ingested,
-        and will set this explicitly."""
+        TER legs come from the GTFS cache and bus legs from the coach
+        cache, both setting entity explicitly ("Car TER" stays TER:
+        the TER check runs first)."""
         e = (self.entity or "").upper()
         if "OUIGO" in e:
             return "OUIGO"
@@ -87,6 +88,8 @@ class Trip:
             return "INTERCITES"
         if "TER" in e or "NAVETTE" in e or "TRAMTRAIN" in e:
             return "TER"                            # "Train TER", "Car TER", navettes
+        if "BUS" in e or "FLIX" in e or "BLABLA" in e:
+            return "BUS"                            # "FlixBus", "BlaBlaBus"
         return "TGV"
 
     @property

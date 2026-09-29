@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" role="img" aria-label="TGV Duplex">
+  <!-- stylized TGV Duplex side profile, USI indigo -->
+  <line x1="0" y1="104" x2="400" y2="104" stroke="#e5e7eb" stroke-width="3"/>
+  <!-- pantograph -->
+  <polyline points="150,52 170,26 210,26 190,52" fill="none" stroke="#374151" stroke-width="3" stroke-linejoin="round"/>
+  <line x1="160" y1="26" x2="220" y2="26" stroke="#374151" stroke-width="3"/>
+  <!-- body -->
+  <path d="M20,100 L20,62 Q20,52 30,52 L300,52 Q330,52 350,66 L372,88 Q378,94 372,100 Z" fill="#4338ca"/>
+  <path d="M20,100 L20,88 L372,88 Q378,94 372,100 Z" fill="#3730a3"/>
+  <!-- nose window -->
+  <path d="M330,58 L348,70 L330,70 Z" fill="#bfdbfe"/>
+  <!-- upper + lower window bands (duplex) -->
+  <rect x="34" y="58" width="280" height="9" rx="4" fill="#bfdbfe"/>
+  <rect x="34" y="72" width="280" height="9" rx="4" fill="#93c5fd"/>
+  <line x1="34" y1="70" x2="314" y2="70" stroke="#4338ca" stroke-width="2"/>
+  <!-- doors -->
+  <rect x="120" y="58" width="10" height="30" fill="#312e81"/>
+  <rect x="240" y="58" width="10" height="30" fill="#312e81"/>
+  <!-- skirt + bogies -->
+  <rect x="20" y="100" width="352" height="4" fill="#1e1b4b"/>
+  <g fill="#1f2937"><rect x="60" y="100" width="34" height="8" rx="3"/><rect x="180" y="100" width="34" height="8" rx="3"/><rect x="300" y="100" width="34" height="8" rx="3"/></g>
+  <g fill="#9ca3af"><circle cx="70" cy="108" r="3"/><circle cx="84" cy="108" r="3"/><circle cx="190" cy="108" r="3"/><circle cx="204" cy="108" r="3"/><circle cx="310" cy="108" r="3"/><circle cx="324" cy="108" r="3"/></g>
+</svg>
