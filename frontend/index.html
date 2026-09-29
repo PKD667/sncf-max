@@ -13,20 +13,24 @@
 <h1>TGV <span>//</span> <em>MAX</em><img src="https://unsuspicious.org/graphics/short.png" alt="USI"></h1>
 
 <div class="box">
-<h2>SEARCH</h2>
+<h2>ROUTE</h2>
 <form onsubmit="search();return false">
 <div class="row">
-<select name="origin"></select>
-<select name="destination"></select>
+<select name="origin" title="departure station"></select>
+<select name="destination" title="arrival station"></select>
 <input type="date" name="date">
-<button type="submit" class="prim">GO</button>
-<button type="button" onclick="hunt()" title="all departures from the origin">HUNT</button>
-<button type="button" onclick="huntArr()" title="all arrivals to the destination">ARR</button>
+<button type="submit" class="prim">SEARCH</button>
 </div>
 <div class="row" style="margin-top:3px">
 <input type="text" name="dep_after" placeholder="dep after (HH:MM)" style="width:115px">
 <input type="text" name="arr_before" placeholder="arr before (HH:MM)" style="width:115px">
 </div></form>
+<h2 style="margin-top:8px">ONE STATION</h2>
+<div class="row">
+<button type="button" onclick="hunt()" title="every free train leaving the origin, same date">DEPARTURES</button>
+<button type="button" onclick="huntArr()" title="every free train arriving at the destination, same date">ARRIVALS</button>
+</div>
+<div class="e" style="margin-top:4px">SEARCH needs origin + destination · DEPARTURES uses the origin · ARRIVALS uses the destination</div>
 <div class="row" style="margin-top:3px"><span id="st" style="font-size:10px;color:var(--dim)"></span></div>
 </div>
 

@@ -2,7 +2,7 @@
 var STATIONS=[],map=null,routeLayer=null;
 var C={};          // API name -> [lat,lon]  (from backend)
 var DISP={};       // API name -> pretty display label (from backend)
-var SNCF_AUTH=null; // SNCF Connect auth status
+var SNCF_AUTH={login_id:null,email:null,pending:null}; // SNCF Connect login_id session
 // Row click dispatch: trip objects are stored here and rows reference them by
 // index. (Inline JSON.stringify into onclick="" broke on the embedded double
 // quotes and left every row's detail panel dead with "Unexpected end of input".)
@@ -100,18 +100,21 @@ try{setTimeout(function(){
   drawStationMarkers();
 },800)}catch(e){console.log('map disabled')}
 
-// SNCF Connect Authentication
+// SNCF Connect Authentication (login_id sessions, no site login needed)
+function sncfStoredId(){try{return localStorage.getItem('sncf_login_id')}catch(e){return null}}
 function checkSncfAuth(){
-  fetch('/api/auth/sncf/status').then(function(r){return r.json()}).then(function(data){
-    SNCF_AUTH=data;
-    renderAuthUI(data);
-  }).catch(function(){renderAuthUI({sncf_connected:false,pam_user:null})});
+  var id=sncfStoredId();
+  if(!id){SNCF_AUTH={login_id:null,email:null,pending:null};renderAuthUI({connected:false});return}
+  fetch('/api/auth/sncf/status?login_id='+encodeURIComponent(id)).then(function(r){return r.json()}).then(function(data){
+    if(data.connected){SNCF_AUTH={login_id:id,email:data.email,pending:null};renderAuthUI({connected:true,email:data.email})}
+    else{try{localStorage.removeItem('sncf_login_id')}catch(e){};SNCF_AUTH={login_id:null,email:null,pending:null};renderAuthUI({connected:false})}
+  }).catch(function(){SNCF_AUTH={login_id:null,email:null,pending:null};renderAuthUI({connected:false})});
 }
 
 function renderAuthUI(data){
   var box=document.getElementById('authBox');
   if(!box) return;
-  if(data.sncf_connected){
+  if(data.connected){
     box.innerHTML='<h2>SNCF CONNECT <span style="color:var(--g)">●</span> <span style="color:var(--dim)">('+data.email+')</span> <button onclick="showSncfModal()">Change</button></h2>';
   }else{
     box.innerHTML='<h2>SNCF CONNECT <span style="color:var(--r)">○</span> <button onclick="showSncfModal()">Connect</button></h2>';
@@ -120,43 +123,64 @@ function renderAuthUI(data){
 
 function showSncfModal(){
   var html='<div style=line-height:1.8><h3 style="margin-bottom:8px">SNCF Connect</h3>';
-  if(SNCF_AUTH && SNCF_AUTH.sncf_connected){
+  if(SNCF_AUTH.login_id){
     html+='<p style="color:var(--dim);font-size:11px;margin-bottom:8px">Connected as: <b>'+SNCF_AUTH.email+'</b></p>';
-    html+='<button onclick="disconnectSncf()" style="background:var(--r);color:white;border-color:var(--r)">Disconnect</button>';
+    html+='<button onclick="sncfLogout()" style="background:var(--r);color:white;border-color:var(--r)">Disconnect</button>';
   }else{
-    html+='<p style="color:var(--dim);font-size:11px;margin-bottom:8px">Enter your SNCF Connect credentials to enable booking and exact prices.</p>';
-    html+='<div class=row style="margin-top:4px"><input type=email name=sncf_email placeholder="Email" required style="flex:1"></div>';
-    html+='<div class=row style="margin-top:4px"><input type=password name=sncf_password placeholder="Password" required style="flex:1"></div>';
-    html+='<div class=row style="margin-top:8px"><button class=prim onclick="saveSncfCreds()">Save</button></div>';
+    html+='<p style="color:var(--dim);font-size:11px;margin-bottom:8px">Log in with your SNCF account to book from here. SNCF emails a 6-digit code on every new login, so keep your inbox handy. Your password is used once and never stored.</p>';
+    html+='<div class=row style="margin-top:4px"><input type=email name=sncf_email placeholder="Email" style="flex:1"></div>';
+    html+='<div class=row style="margin-top:4px"><input type=password name=sncf_password placeholder="Password" style="flex:1"></div>';
+    html+='<div id=sncfCodeWrap style="display:none"><div class=row style="margin-top:4px"><input name=sncf_code placeholder="6-digit email code" inputmode=numeric style="flex:1"></div><p style="color:var(--dim);font-size:11px;margin-top:4px">Check your email, then enter the code.</p></div>';
+    html+='<div class=row style="margin-top:8px"><button class=prim id=sncfGoBtn onclick="sncfStart()">Log in</button></div>';
   }
   html+='</div>';
   show('detail');document.getElementById('dt').innerHTML=html;
 }
 
-function saveSncfCreds(){
+function sncfStart(){
   var email=document.querySelector('input[name=sncf_email]').value;
   var password=document.querySelector('input[name=sncf_password]').value;
   if(!email||!password){alert('Email and password required');return;}
-  loading(true,'saving...');
-  fetch('/api/auth/sncf/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,password:password})})
+  loading(true,'contacting SNCF (can take up to a minute)...');
+  fetch('/api/auth/sncf/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,password:password})})
     .then(function(r){return r.json()}).then(function(data){
       loading(false);
-      if(data.success){
-        checkSncfAuth();
-        hideDetail();
-      }else{alert(data.error||'Failed to save');}
+      if(data.status==='connected'){sncfRemember(data);hideDetail();}
+      else if(data.status==='code_required'){
+        SNCF_AUTH.pending=data.login_id;
+        document.getElementById('sncfCodeWrap').style.display='block';
+        var btn=document.getElementById('sncfGoBtn');
+        btn.textContent='Verify code';btn.setAttribute('onclick','sncfCode()');
+        document.getElementById('st').textContent='SNCF emailed you a code — enter it above';
+      }
+      else{alert(data.error||'Login failed');}
     }).catch(function(){loading(false);alert('Request failed')});
 }
 
-function disconnectSncf(){
-  if(!confirm('Disconnect from SNCF Connect?')) return;
-  loading(true,'disconnecting...');
-  fetch('/api/auth/sncf/delete',{method:'POST'})
+function sncfCode(){
+  var code=document.querySelector('input[name=sncf_code]').value;
+  if(!code){alert('Enter the 6-digit code from your email');return;}
+  loading(true,'verifying code...');
+  fetch('/api/auth/sncf/code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login_id:SNCF_AUTH.pending,code:code})})
     .then(function(r){return r.json()}).then(function(data){
       loading(false);
-      if(data.success){checkSncfAuth();hideDetail();}
-      else{alert(data.error||'Failed to disconnect');}
+      if(data.status==='connected'){sncfRemember(data);hideDetail();}
+      else{alert(data.error||'Code rejected');}
     }).catch(function(){loading(false);alert('Request failed')});
+}
+
+function sncfRemember(data){
+  SNCF_AUTH={login_id:data.login_id,email:data.email,pending:null};
+  try{localStorage.setItem('sncf_login_id',data.login_id)}catch(e){}
+  renderAuthUI({connected:true,email:data.email});
+}
+
+function sncfLogout(){
+  var id=SNCF_AUTH.login_id;
+  SNCF_AUTH={login_id:null,email:null,pending:null};
+  try{localStorage.removeItem('sncf_login_id')}catch(e){}
+  if(id)fetch('/api/auth/sncf/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login_id:id})}).catch(function(){});
+  checkSncfAuth();hideDetail();
 }
 
 // search
@@ -239,7 +263,7 @@ function showTrip(t){
     '<span style=color:var(--dim)>'+t.duration_min+' min | '+(t.entity||'')+'</span>'+
     '</div>';
   // Add book button if SNCF connected
-  if(SNCF_AUTH && SNCF_AUTH.sncf_connected && t.is_free){
+  if(SNCF_AUTH.login_id && t.is_free){
     html+='<div style="margin-top:8px"><button class=prim onclick=\'bookTrip('+JSON.stringify(t).replace(/'/g,"\\'")+')\'>Book this trip</button></div>';
   }
   html+='<div id="stopList" style="margin-top:6px;color:var(--dim);font-size:10px">loading stops...</div>'+
@@ -261,11 +285,13 @@ function showTrip(t){
 }
 
 function bookTrip(t){
+  if(!SNCF_AUTH.login_id){alert('Connect SNCF first (SNCF CONNECT box above)');showSncfModal();return}
   if(!confirm('Book '+t.train_number+' '+disp(t.origin)+' → '+disp(t.destination)+' on '+t.departure_date+' at '+t.departure_time+'?')) return;
   loading(true,'booking...');
-  fetch('/api/booking/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trip:t})})
+  fetch('/api/booking/book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login_id:SNCF_AUTH.login_id,trip:t})})
     .then(function(r){return r.json()}).then(function(data){
       loading(false);
+      if(data.need_auth){alert('SNCF session expired — please Connect again');showSncfModal();return}
       if(data.success){
         alert('✅ Booked! Confirmation: '+(data.confirmation||'N/A'));
         hideDetail();

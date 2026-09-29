@@ -26,6 +26,17 @@ class AuthenticationError(Exception):
     pass
 
 
+class EmailCodeRequired(AuthenticationError):
+    """SNCF asked for the 6-digit email verification code.
+
+    Raised by login_start() when the password step succeeded but SNCF
+    challenges this new device/browser with an emailed code. The login
+    page is kept open on the authenticator; complete it with
+    login_submit_code(). No session exists yet when this is raised.
+    """
+    pass
+
+
 class SNCFAuthenticator:
     """Handles authentication with SNCF Connect.
     
@@ -71,6 +82,19 @@ class SNCFAuthenticator:
             'button:has-text("Me connecter")',
             'button:has-text("Connexion")',
             'button:has-text("Se connecter")',
+            'button:has-text("Valider")',
+            'button:has-text("Confirmer")',
+        ],
+
+        # Second factor: 6-digit code emailed by SNCF for every new
+        # device/browser ("Mon Identifiant SNCF" two-step login).
+        "code_input": [
+            'input[autocomplete="one-time-code"]',
+            'input[name="code"]',
+            'input[id*="code"]',
+            'input[id*="otp"]',
+            'input[inputmode="numeric"]',
+            'input[maxlength="6"]',
         ],
         
         # Post-login indicators
@@ -94,12 +118,16 @@ class SNCFAuthenticator:
         config: Optional[SNCFConfig] = None,
         use_firefox: bool = True,
         session_file: Optional[Path] = None,
+        persist_session: bool = True,
     ):
         """Initialize the authenticator.
         
         Args:
             config: Optional configuration object
             use_firefox: Use Firefox instead of Chromium (better for bot evasion)
+            persist_session: Save the session to disk on success. The web
+                frontend passes False: sessions live in server memory only,
+                so no credential or cookie ever lands on disk.
         """
         if not PLAYWRIGHT_AVAILABLE:
             raise ImportError(
@@ -116,6 +144,11 @@ class SNCFAuthenticator:
         # Optional override for where session tokens are loaded/saved.
         # When provided, this path is used instead of config.SESSION_FILE.
         self._session_file: Optional[Path] = session_file
+        self._persist_session = persist_session
+        # Pending two-step login: the page waiting for the email code,
+        # set by login_start() and consumed by login_submit_code().
+        self._pending_page: Optional[Page] = None
+        self._pending_email: str = ""
     
     async def __aenter__(self):
         await self._start_browser()
@@ -282,7 +315,11 @@ class SNCFAuthenticator:
         except Exception:
             pass  # Cookie banner might not be present
 
-    async def _handle_captcha(self, page: Page) -> None:
+    async def _handle_captcha(
+        self,
+        page: Page,
+        on_captcha: Optional[Callable[[], None]] = None,
+    ) -> None:
                     # Check for CAPTCHA in login popup before proceeding
             # DataDome and other bot protection services use various captcha iframes
             captcha_detected = False
@@ -355,6 +392,12 @@ class SNCFAuthenticator:
     async def login(self, credentials: UserCredentials, 
                     on_captcha: Optional[Callable[[], None]] = None) -> Session:
         """Log in to SNCF Connect and return session data.
+
+        Legacy single-shot path kept for CLI compatibility: it submits the
+        password and cannot answer SNCF's emailed-code second step, so it
+        raises EmailCodeRequired whenever SNCF challenges the new device
+        (which is nearly always). Interactive flows should use
+        login_start() + login_submit_code() instead.
         
         Args:
             credentials: User email and password
@@ -564,6 +607,390 @@ class SNCFAuthenticator:
         finally:
             await page.close()
     
+    # ------------------------------------------------------------------
+    # Two-step web login: password first, emailed code second.
+    #
+    # SNCF ("Mon Identifiant SNCF") challenges every new device/browser
+    # with a 6-digit code emailed to the account address, AFTER the
+    # password is accepted. A server-side login therefore cannot complete
+    # in one shot: login_start() submits the password and either returns
+    # "connected" or raises EmailCodeRequired (keeping the browser page
+    # open); the caller collects the code from the user and finishes with
+    # login_submit_code(). The legacy single-shot login() below is kept
+    # for CLI compatibility.
+    # ------------------------------------------------------------------
+
+    #: Substrings (lowercased page text) signalling the emailed-code step.
+    _CODE_CHALLENGE_TEXT = (
+        "code de vérification",
+        "code de validation",
+        "6 chiffres",
+        "6-digit",
+        "verification code",
+    )
+
+    async def _is_blocked(self, page: Page) -> bool:
+        """Detect bot-protection walls (DataDome/captcha) before grinding."""
+        selectors = [
+            'iframe[src*="captcha-delivery"]',
+            'iframe[src*="datadome"]',
+            'iframe[src*="recaptcha"]',
+        ]
+        for sel in selectors:
+            try:
+                loc = page.locator(sel)
+                if await loc.count() > 0 and await loc.first.is_visible():
+                    return True
+            except Exception:
+                pass
+        return False
+
+    async def _wait_visible(
+        self, page: Page, selector_key: str, timeout: int = 20000
+    ) -> Optional[str]:
+        """Wait until any selector of the set is visible. Bounded total.
+
+        Unlike _fill_input (which burns `timeout` PER selector), this caps
+        the whole detection at `timeout` ms and returns the matching
+        selector, or None. Use before filling so a walled-off page fails
+        in seconds instead of grinding through every selector timeout.
+        """
+        selectors = self.SELECTORS.get(selector_key, [])
+        if isinstance(selectors, str):
+            selectors = [selectors]
+        deadline = asyncio.get_running_loop().time() + timeout / 1000
+        while True:
+            for sel in selectors:
+                try:
+                    loc = page.locator(sel)
+                    if await loc.count() > 0 and await loc.first.is_visible():
+                        return sel
+                except Exception:
+                    pass
+            if asyncio.get_running_loop().time() >= deadline:
+                return None
+            await asyncio.sleep(0.5)
+
+    async def _open_login_page(self, on_captcha=None):
+        """Start the browser, open SNCF Connect, return (page, login_page).
+
+        Captures the login popup when the button opens one; otherwise
+        falls back to the standalone login URL on the same page. Never
+        lets playwright's popup-wait escape: a silently-swallowed click
+        (bot-gated button) is a normal outcome, not an exception.
+        """
+        if not self._browser:
+            await self._start_browser()
+
+        page = await self._context.new_page()
+
+        # Navigate to SNCF Connect
+        await page.goto(self.config.SNCF_CONNECT_BASE_URL, timeout=self.config.BROWSER_TIMEOUT)
+        await page.wait_for_load_state("domcontentloaded", timeout=self.config.BROWSER_TIMEOUT)
+        await page.wait_for_timeout(2000)  # Wait for JS to load
+
+        # Handle cookie consent
+        await self._handle_cookie_consent(page)
+
+        login_page = None
+        try:
+            async with self._context.expect_page(timeout=8000) as popup_info:
+                clicked = await self._click_element(page, "login_button", timeout=10000)
+                if clicked:
+                    try:
+                        login_page = await popup_info.value
+                    except Exception:
+                        login_page = None
+        except Exception:
+            login_page = None
+
+        if login_page is not None:
+            try:
+                await login_page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+        else:
+            # No popup: maybe the form is already here, else go to it.
+            if await self._wait_visible(page, "email_input", timeout=5000) is None:
+                for url in (
+                    f"{self.config.SNCF_CONNECT_BASE_URL}/app/home/login",
+                    f"{self.config.SNCF_CONNECT_BASE_URL}/home/login",
+                ):
+                    try:
+                        await page.goto(url, timeout=self.config.BROWSER_TIMEOUT)
+                        await page.wait_for_timeout(2000)
+                        break
+                    except Exception:
+                        continue
+            login_page = page
+
+        await login_page.wait_for_timeout(3000)
+        return page, login_page
+
+    async def _password_error(self, login_page: Page) -> Optional[str]:
+        """Return the login form's error text after a submit, if any."""
+        error_el = await self._find_element(login_page, "error_message")
+        if not error_el:
+            return None
+        try:
+            error_text = await error_el.text_content()
+            if error_text and len(error_text.strip()) > 3:
+                return error_text.strip()
+        except Exception:
+            pass
+        return None
+
+    async def _is_code_challenge(self, page: Page) -> bool:
+        """Detect SNCF's emailed-code second step."""
+        for sel in self.SELECTORS["code_input"]:
+            try:
+                loc = page.locator(sel)
+                if await loc.count() > 0 and await loc.first.is_visible():
+                    return True
+            except Exception:
+                pass
+        try:
+            text = (await page.content()).lower()
+        except Exception:
+            return False
+        return any(t in text for t in self._CODE_CHALLENGE_TEXT)
+
+    async def _is_logged_in(self, page: Page) -> bool:
+        """Logged-in indicators or SNCF auth cookies present."""
+        if await self._find_element(page, "logged_in"):
+            return True
+        try:
+            cookies = await self._context.cookies()
+        except Exception:
+            return False
+        return any(
+            any(x in c["name"].lower() for x in ["auth", "session", "token", "user", "sncf"])
+            for c in cookies
+        )
+
+    async def _confirm_logged_in(self, login_page: Page) -> bool:
+        """Confirm the session, falling back to the account page check."""
+        if await self._is_logged_in(login_page):
+            return True
+        try:
+            await login_page.goto(
+                f"{self.config.SNCF_CONNECT_BASE_URL}/app/home/myaccount",
+                timeout=10000,
+            )
+            await login_page.wait_for_timeout(2000)
+        except Exception:
+            pass
+        return await self._is_logged_in(login_page)
+
+    async def _build_session(self, page: Page, email: str) -> Session:
+        """Capture cookies + tokens from an authenticated page."""
+        cookies = await self._context.cookies()
+        cookie_dict = {c["name"]: c["value"] for c in cookies}
+
+        # Try to extract any auth tokens from localStorage
+        tokens: dict = {}
+        try:
+            tokens = await page.evaluate("""() => {
+                const data = {};
+                try {
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        if (key && (key.toLowerCase().includes('token') ||
+                            key.toLowerCase().includes('auth') ||
+                            key.toLowerCase().includes('session'))) {
+                            data[key] = localStorage.getItem(key);
+                        }
+                    }
+                } catch(e) {}
+                return data;
+            }""")
+        except Exception:
+            pass
+
+        return Session(
+            user_email=email,
+            cookies=cookie_dict,
+            access_token=tokens.get("access_token"),
+            refresh_token=tokens.get("refresh_token"),
+        )
+
+    async def login_start(
+        self,
+        credentials: UserCredentials,
+        on_captcha: Optional[Callable[[], None]] = None,
+    ) -> str:
+        """Submit email+password. Returns "connected", or raises EmailCodeRequired.
+
+        On "connected" the session is available as self.session (and saved
+        to disk unless persist_session=False). On EmailCodeRequired the
+        browser page stays open: finish with login_submit_code().
+        """
+        if not credentials.email or not credentials.password:
+            raise AuthenticationError("Email and password are required")
+
+        page = None
+        try:
+            page, login_page = await self._open_login_page(on_captcha)
+        except AuthenticationError:
+            await self.close()
+            raise
+        except Exception as e:
+            await self.close()
+            raise AuthenticationError(f"Could not open SNCF login: {e}") from e
+        try:
+            if self.config.DEBUG:
+                await self._take_screenshot(login_page, "login_popup")
+
+            # Bot wall instead of a login form: fail fast rather than
+            # grinding through every selector timeout (minutes). A
+            # challenge iframe alone is not conclusive (SNCF loads the
+            # captcha script site-wide), so only bail when there is
+            # genuinely no login form to fill.
+            if await self._is_blocked(login_page) and await self._wait_visible(
+                login_page, "email_input", timeout=8000
+            ) is None:
+                await self._take_screenshot(login_page, "blocked")
+                raise AuthenticationError(
+                    "SNCF bot protection (DataDome) blocked this login "
+                    "attempt from the server. Booking needs a manual login "
+                    "for now - try again later."
+                )
+
+            # Fill in email in the login page/popup
+            if await self._wait_visible(login_page, "email_input", timeout=20000) is None:
+                await self._take_screenshot(login_page, "email_not_found")
+                raise AuthenticationError(
+                    "Could not find email input field "
+                    "(SNCF may block automated browsers)"
+                )
+            if not await self._fill_input(login_page, "email_input", credentials.email, timeout=5000):
+                raise AuthenticationError("Could not fill email input field")
+
+            await login_page.wait_for_timeout(500)
+
+            # Fill in password
+            if await self._wait_visible(login_page, "password_input", timeout=15000) is None:
+                await self._take_screenshot(login_page, "password_not_found")
+                raise AuthenticationError("Could not find password input field")
+            if not await self._fill_input(login_page, "password_input", credentials.password, timeout=5000):
+                raise AuthenticationError("Could not fill password input field")
+
+            if self.config.DEBUG:
+                await self._take_screenshot(login_page, "credentials_filled")
+
+            await login_page.wait_for_timeout(1000)
+
+            # Submit the form
+            if not await self._click_element(login_page, "submit_button", timeout=10000):
+                # Try pressing Enter as fallback
+                await login_page.keyboard.press("Enter")
+
+            await self._handle_captcha(login_page, on_captcha)
+
+            # Wait for login to complete
+            await login_page.wait_for_timeout(4000)
+
+            # Wrong password etc. surface here, before any code step.
+            message = await self._password_error(login_page)
+            if message:
+                await self._take_screenshot(login_page, "login_popup_error")
+                raise AuthenticationError(f"Login failed: {message}")
+
+            if await self._is_code_challenge(login_page):
+                self._pending_page = login_page
+                self._pending_email = credentials.email
+                # NOTE: pages stay open on purpose; login_submit_code()
+                # or close() releases them.
+                raise EmailCodeRequired(
+                    "SNCF emailed a 6-digit verification code to "
+                    f"{credentials.email} (new device). Submit it to finish logging in."
+                )
+
+            if not await self._confirm_logged_in(login_page):
+                await self._take_screenshot(login_page, "no_session")
+                raise AuthenticationError(
+                    "Login may have failed - no session established. "
+                    "Check credentials or try again."
+                )
+
+            self._session = await self._build_session(login_page, credentials.email)
+            if self._persist_session:
+                self._save_session()
+            return "connected"
+        except EmailCodeRequired:
+            raise
+        except AuthenticationError:
+            await self.close()
+            raise
+        except Exception as e:
+            try:
+                if not page.is_closed():
+                    await self._take_screenshot(page, "error")
+            except Exception:
+                pass
+            await self.close()
+            raise AuthenticationError(f"Authentication failed: {e}") from e
+        finally:
+            if self._pending_page is None and page is not None:
+                try:
+                    if not page.is_closed():
+                        await page.close()
+                except Exception:
+                    pass
+
+    async def login_submit_code(
+        self,
+        code: str,
+        on_captcha: Optional[Callable[[], None]] = None,
+    ) -> Session:
+        """Submit the emailed 6-digit code and return the session."""
+        page = self._pending_page
+        if page is None:
+            raise AuthenticationError(
+                "No pending email-code challenge. Start a login first."
+            )
+        code = (code or "").strip().replace(" ", "")
+        if not code:
+            raise AuthenticationError("Verification code is required")
+        try:
+            if await self._wait_visible(page, "code_input", timeout=20000) is None:
+                raise AuthenticationError(
+                    "Code field not found - the challenge may have expired. Start over."
+                )
+            if not await self._fill_input(page, "code_input", code, timeout=5000):
+                raise AuthenticationError("Could not fill the code field - start over.")
+            await page.wait_for_timeout(500)
+            if not await self._click_element(page, "submit_button", timeout=10000):
+                await page.keyboard.press("Enter")
+
+            await self._handle_captcha(page, on_captcha)
+            await page.wait_for_timeout(4000)
+
+            message = await self._password_error(page)
+            if message:
+                await self._take_screenshot(page, "code_error")
+                raise AuthenticationError(f"Code rejected: {message}")
+
+            if await self._is_code_challenge(page):
+                raise AuthenticationError(
+                    "SNCF is still asking for a code - wrong or expired code. Start over."
+                )
+
+            if not await self._confirm_logged_in(page):
+                await self._take_screenshot(page, "no_session_after_code")
+                raise AuthenticationError(
+                    "Login failed after code - session not established."
+                )
+
+            self._session = await self._build_session(page, self._pending_email)
+            if self._persist_session:
+                self._save_session()
+            return self._session
+        finally:
+            self._pending_page = None
+            self._pending_email = ""
+            await self.close()
+
     def _save_session(self) -> None:
         """Save current session to disk."""
         if self._session:
