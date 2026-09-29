@@ -127,32 +127,8 @@ class TerKilometricProvider:
 
     @staticmethod
     def _crow_km(origin: str, destination: str) -> Optional[float]:
-        km = stn.distance_km(origin, destination)
-        if km is not None:
-            return km
-        # GTFS-labelled TER halts are not in the MAX station list:
-        # fall back to the TER cache's own stop coordinates.
-        try:
-            from network import ter as _ter
-            stops = _ter._cache().get("stops", {})
-        except Exception:
-            return None
-        want = {origin.strip().lower(), destination.strip().lower()}
-        found: dict = {}
-        for _uic, meta in stops.items():
-            if meta[0].strip().lower() in want:
-                found[meta[0].strip().lower()] = (meta[1], meta[2])
-        if len(found) < 2:
-            return None
-        import math
-        (lat1, lon1) = found[origin.strip().lower()]
-        (lat2, lon2) = found[destination.strip().lower()]
-        r = 6371.0
-        p1, p2 = math.radians(lat1), math.radians(lat2)
-        dp = math.radians(lat2 - lat1)
-        dl = math.radians(lon2 - lon1)
-        h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-        return 2 * r * math.asin(math.sqrt(h))
+        km = _coords_km(origin, destination)
+        return km
 
     @classmethod
     def price_cents(cls, rail_km: float) -> int:
@@ -177,11 +153,10 @@ class TerKilometricProvider:
 
 
 class PerKmProvider:
-    """Distance-based estimate, the universal fallback (TER only reaches
-    here when neither station has coordinates)."""
+    """Distance-based estimate, the universal fallback."""
 
     def fare(self, origin: str, destination: str, carrier: str) -> Optional[Fare]:
-        km = stn.distance_km(origin, destination)
+        km = _coords_km(origin, destination)
         if km is None:
             return None
         lo_rate, hi_rate = PER_KM_EUR.get(carrier.upper(), PER_KM_EUR["DEFAULT"])
@@ -197,6 +172,45 @@ REGISTRY: List[FareProvider] = [
     TerKilometricProvider(),
     PerKmProvider(),
 ]
+
+
+def _coords_any(name: str):
+    """Coordinates for a MAX station, TER halt or coach stop name."""
+    c = stn.coords(name)
+    if c:
+        return c
+    # GTFS-labelled TER halts are not in the MAX station list.
+    try:
+        from network import ter as _ter
+        for _uic, meta in _ter._cache().get("stops", {}).items():
+            if meta[0] == name and meta[1] is not None:
+                return (meta[1], meta[2])
+    except Exception:
+        pass
+    # Coach stops live in the bus cache under their own names.
+    try:
+        from network import bus as _bus
+        c = _bus.stop_coords(name)
+        if c:
+            return c
+    except Exception:
+        pass
+    return None
+
+
+def _coords_km(origin: str, destination: str) -> Optional[float]:
+    """Great-circle distance (km) across all three stop namespaces."""
+    import math
+    ca, cb = _coords_any(origin), _coords_any(destination)
+    if not ca or not cb:
+        return None
+    (lat1, lon1), (lat2, lon2) = ca, cb
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
 
 
 def estimate_fare(origin: str, destination: str, carrier: str = "TGV") -> Fare:

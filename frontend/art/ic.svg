@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" role="img" aria-label="Intercites Corail">
+  <!-- stylized Corail coach: grey body, red doors -->
+  <line x1="0" y1="104" x2="400" y2="104" stroke="#e5e7eb" stroke-width="3"/>
+  <rect x="30" y="56" width="340" height="44" rx="8" fill="#9ca3af"/>
+  <rect x="30" y="56" width="340" height="14" rx="7" fill="#d1d5db"/>
+  <rect x="30" y="88" width="340" height="12" rx="6" fill="#6b7280"/>
+  <rect x="44" y="62" width="220" height="12" rx="6" fill="#1f2937"/>
+  <g fill="#dc2626"><rect x="90" y="62" width="12" height="38"/><rect x="200" y="62" width="12" height="38"/><rect x="310" y="62" width="12" height="38"/></g>
+  <rect x="30" y="100" width="340" height="4" fill="#374151"/>
+  <g fill="#1f2937"><rect x="70" y="100" width="34" height="8" rx="3"/><rect x="190" y="100" width="34" height="8" rx="3"/><rect x="300" y="100" width="34" height="8" rx="3"/></g>
+  <g fill="#d1d5db"><circle cx="80" cy="108" r="3"/><circle cx="94" cy="108" r="3"/><circle cx="200" cy="108" r="3"/><circle cx="214" cy="108" r="3"/><circle cx="310" cy="108" r="3"/><circle cx="324" cy="108" r="3"/></g>
+</svg>

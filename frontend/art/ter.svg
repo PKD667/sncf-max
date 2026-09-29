@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" role="img" aria-label="TER regional">
+  <!-- stylized single-deck regional railcar, cyan -->
+  <line x1="0" y1="104" x2="400" y2="104" stroke="#e5e7eb" stroke-width="3"/>
+  <polyline points="200,54 216,32 246,32 230,54" fill="none" stroke="#374151" stroke-width="3" stroke-linejoin="round"/>
+  <rect x="60" y="54" width="280" height="46" rx="14" fill="#0891b2"/>
+  <rect x="60" y="54" width="280" height="12" rx="6" fill="#67e8f9"/>
+  <rect x="76" y="70" width="180" height="12" rx="6" fill="#ecfeff"/>
+  <path d="M262,70 L300,70 Q310,70 310,80 L262,80 Z" fill="#ecfeff"/>
+  <rect x="140" y="66" width="12" height="34" fill="#164e63"/>
+  <rect x="240" y="66" width="12" height="34" fill="#164e63"/>
+  <text x="270" y="96" font-family="monospace" font-size="10" font-weight="bold" fill="#cffafe" letter-spacing="2">TER</text>
+  <rect x="60" y="100" width="280" height="4" fill="#164e63"/>
+  <g fill="#1f2937"><rect x="100" y="100" width="36" height="8" rx="3"/><rect x="260" y="100" width="36" height="8" rx="3"/></g>
+  <g fill="#9ca3af"><circle cx="111" cy="108" r="3"/><circle cx="125" cy="108" r="3"/><circle cx="271" cy="108" r="3"/><circle cx="285" cy="108" r="3"/></g>
+</svg>

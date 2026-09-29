@@ -253,7 +253,8 @@ function showTrip(t){
     map.fitBounds(L.latLngBounds([oc,dc]),{padding:[40,40],maxZoom:8});
   }
   show('detail');
-  var html='<div style=line-height:1.8>'+
+  var html='<img src="/art/'+artFor(t)+'.svg" alt="" style="width:100%;max-height:90px;margin-bottom:4px">'+
+    '<div style=line-height:1.8>'+
     '<span class="tag tag-m">MAX</span> '+
     'Train <b style=color:var(--hi)>'+t.train_number+'</b><br>'+
     '<span style=color:var(--dim)>'+t.departure_date+'</span><br>'+
@@ -269,6 +270,12 @@ function showTrip(t){
   html+='<div id="stopList" style="margin-top:6px;color:var(--dim);font-size:10px">loading stops...</div>'+
     '</div>';
   document.getElementById('dt').innerHTML=html;
+
+  // coaches have no SNCF stop list: static note instead
+  if(t.carrier==='BUS'){
+    document.getElementById('stopList').innerHTML='coach service — board at the bus stop above, e-ticket by email';
+    return;
+  }
 
   // fetch stop list
   var params='train='+t.train_number+'&date='+t.departure_date;
@@ -307,6 +314,7 @@ function showComposite(c){
   c.legs.forEach(function(l,i){
     var f=latlng(l.origin),t=latlng(l.destination);
     var legtag=l.is_free?'<span class="tag tag-m">MAX</span>':'<span class="tag '+(l.carrier==='TER'?'tag-c':'tag-p')+'">'+(l.carrier||'')+'</span>';
+    html+='<img src="/art/'+artFor(l)+'.svg" alt="" style="height:26px;vertical-align:middle;margin-right:4px">';
     html+='<span style=color:var(--dim)>leg '+(i+1)+'</span> '+legtag+' ';
     html+='Train <b style=color:var(--hi)>'+l.train_number+'</b>';
     html+=l.is_free?'':' <span style=color:var(--y)>'+(l.price_display||'')+'</span>';
@@ -344,6 +352,17 @@ function priceKey(trip){
   // estimate price order from duration — longer trip = more expensive
   // this ranks by estimated price without needing exact values
   return trip.duration_min || 60;
+}
+
+// rolling-stock illustration per carrier (see frontend/art/)
+function artFor(t){
+  if(t.is_free) return 'max';
+  var c=(t.carrier||'').toUpperCase();
+  if(c==='OUIGO') return 'ouigo';
+  if(c==='INTERCITES') return 'ic';
+  if(c==='TER') return 'ter';
+  if(c==='BUS') return 'bus';
+  return 'tgv';
 }
 
 // render
