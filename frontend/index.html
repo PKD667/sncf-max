@@ -10,14 +10,7 @@
 <body>
 <div id="map"></div>
 <div id="side">
-<h1>
-<span class="brand-name">TGV <span>//</span> <em>MAX</em></span>
-<nav class="site-switcher" aria-label="Site links">
-<a class="site-button current" href="https://max.unsuspicious.org/" aria-current="page">CURRENT SITE</a>
-<a class="site-button" href="/tgvmax/">NEW SITE</a>
-</nav>
-<img src="https://unsuspicious.org/graphics/short.png" alt="USI">
-</h1>
+<h1>TGV <span>//</span> <em>MAX</em><img src="https://unsuspicious.org/graphics/short.png" alt="USI"></h1>
 
 <div class="box">
 <h2>SEARCH</h2>
@@ -27,7 +20,8 @@
 <select name="destination"></select>
 <input type="date" name="date">
 <button type="submit" class="prim">GO</button>
-<button type="button" onclick="hunt()">HUNT</button>
+<button type="button" onclick="hunt()" title="all departures from the origin">HUNT</button>
+<button type="button" onclick="huntArr()" title="all arrivals to the destination">ARR</button>
 </div>
 <div class="row" style="margin-top:3px">
 <input type="text" name="dep_after" placeholder="dep after (HH:MM)" style="width:115px">

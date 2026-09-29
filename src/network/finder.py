@@ -143,6 +143,61 @@ class FreeTripFinder:
             ],
         )
 
+    def find_all_to(
+        self,
+        destination: str,
+        trip_date: Optional[date] = None,
+        origins: Optional[List[str]] = None,
+        max_routes: int = 50,
+    ) -> FinderReport:
+        """Parallel reverse broadcast: find every free trip TO *destination*.
+
+        This is the 'who can get here for free today?' query - the mirror of
+        find_all_from, scanning every origin in parallel.
+        """
+        if trip_date is None:
+            trip_date = date.today() + timedelta(days=1)
+        destination_full = get_station_name(destination)
+
+        if origins is None:
+            origins = [
+                o for o in _get_scan_stations()
+                if o.upper() != destination_full.upper()
+            ][:max_routes]
+
+        # parallel fetch
+        free_dict, _paid_dict = self._client.search_all_from_origins_split(
+            destination=destination_full,
+            origins=origins,
+            trip_date=trip_date,
+            workers=self._workers,
+        )
+
+        all_free: List[Trip] = []
+        seen: Set[str] = set()
+        for orig, trips in free_dict.items():
+            for t in trips:
+                key = t.trip_key
+                if key not in seen:
+                    seen.add(key)
+                    all_free.append(t)
+
+        all_free.sort()
+
+        return FinderReport(
+            origin=destination_full,
+            trip_date=trip_date,
+            total_free=len(all_free),
+            buckets=[
+                self._bucket_dead_hours(all_free),
+                self._bucket_long_distance(all_free, 3.0),
+                self._bucket_long_distance(all_free, 5.0),
+                self._bucket_midday_gold(all_free),
+                self._bucket_unpopular_routes(all_free),
+                self._bucket_weekend(all_free),
+            ],
+        )
+
     # ------------------------------------------------------------------
     # Bucket helpers
     # ------------------------------------------------------------------
@@ -272,3 +327,10 @@ def hunt(origin: str = "paris",
 def broadcast(origin: str = "paris",
               trip_date: Optional[date] = None) -> List[Trip]:
     return hunt(origin=origin, trip_date=trip_date).all_free_trips
+
+
+def broadcast_to(destination: str = "lyon",
+                 trip_date: Optional[date] = None) -> List[Trip]:
+    """All free trips arriving at *destination* on a date (reverse hunt)."""
+    return FreeTripFinder().find_all_to(
+        destination=destination, trip_date=trip_date).all_free_trips

@@ -28,8 +28,8 @@ _src = Path(__file__).resolve().parent.parent / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
-from flask import Flask, request, jsonify, redirect, send_from_directory
-from network.core import search, broadcast, SearchResult
+from flask import Flask, request, jsonify, send_from_directory
+from network.core import search, broadcast, broadcast_to, SearchResult
 from config import STATIONS, get_station_name
 from network.decomposition import CompositeTrip
 from network import stations as stn
@@ -37,7 +37,6 @@ from network import stations as stn
 app = Flask(__name__, static_folder=None)
 
 HERE = Path(__file__).resolve().parent
-TGVMAX_ROOT = HERE / "tgvmax"
 
 # ---------------------------------------------------------------------------
 # PAM User & SNCF Connect Credential Storage
@@ -113,19 +112,6 @@ def index() -> str:
     """Serve the single-page frontend."""
     template = HERE / "index.html"
     return template.read_text()
-
-
-@app.route("/tgvmax")
-def tgvmax_root():
-    """Keep relative links inside the bundled TGV Max site."""
-    return redirect("/tgvmax/", code=308)
-
-
-@app.route("/tgvmax/", defaults={"path": "index.html"})
-@app.route("/tgvmax/<path:path>")
-def tgvmax_site(path: str):
-    """Serve the static TGV Max site bundled from the local project."""
-    return send_from_directory(str(TGVMAX_ROOT), path)
 
 
 @app.route("/api/stations")
@@ -243,11 +229,13 @@ def api_search():
 
 @app.route("/api/broadcast")
 def api_broadcast():
-    """Find all free trips from a station on a given date.
+    """Find all free trips for a station on a given date.
 
-    Query params: origin, date (optional, YYYY-MM-DD)
+    Query params: date (optional, YYYY-MM-DD), direction (optional):
+      - direction=from (default): all departures. Param: origin.
+      - direction=to: all arrivals (reverse hunt). Param: destination.
     """
-    origin = request.args.get("origin", "paris")
+    direction = request.args.get("direction", "from")
     date_str = request.args.get("date", "")
 
     trip_date: Optional[date] = None
@@ -257,7 +245,14 @@ def api_broadcast():
         except ValueError:
             return jsonify({"error": "bad date format (use YYYY-MM-DD)"}), 400
 
-    trips = broadcast(origin=origin, trip_date=trip_date)
+    if direction == "to":
+        destination = request.args.get("destination", "")
+        if not destination:
+            return jsonify({"error": "destination required for direction=to"}), 400
+        trips = broadcast_to(destination=destination, trip_date=trip_date)
+    else:
+        origin = request.args.get("origin", "paris")
+        trips = broadcast(origin=origin, trip_date=trip_date)
     return jsonify([_trip_to_dict(t) for t in trips])
 
 
