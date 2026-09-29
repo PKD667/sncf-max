@@ -56,11 +56,16 @@
         };
 
         # Deployable web entry point used by the NixOS site service.
+        # Ships the Playwright browsers (Firefox, used for SNCF login +
+        # booking) and points Playwright at them: without
+        # PLAYWRIGHT_BROWSERS_PATH the service looks in ~/.cache, which the
+        # systemd sandbox does not provide, and every login crashes.
         sncf-max-web = pkgs.writeShellApplication {
           name = "sncf-max-web";
           runtimeInputs = [ (python.withPackages (ps: pythonDeps)) ];
           text = ''
             export PYTHONPATH="${self}/src:${self}:''${PYTHONPATH:-}"
+            export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
             exec python3 ${self}/frontend/server.py "$@"
           '';
         };
