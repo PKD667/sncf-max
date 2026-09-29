@@ -3,6 +3,12 @@ var STATIONS=[],map=null,routeLayer=null;
 var C={};          // API name -> [lat,lon]  (from backend)
 var DISP={};       // API name -> pretty display label (from backend)
 var SNCF_AUTH=null; // SNCF Connect auth status
+// Row click dispatch: trip objects are stored here and rows reference them by
+// index. (Inline JSON.stringify into onclick="" broke on the embedded double
+// quotes and left every row's detail panel dead with "Unexpected end of input".)
+var LAST_TRIPS=[],LAST_COMPS=[];
+function showTripIdx(i){showTrip(LAST_TRIPS[i])}
+function showCompIdx(i){showComposite(LAST_COMPS[i])}
 
 // helpers
 function latlng(station){
@@ -42,6 +48,11 @@ fetch('/api/stations').then(function(r){return r.json()}).then(function(data){
   var now=new Date();
   document.querySelector('input[name=date]').value=localDay(now);
   document.querySelector('input[name=dep_after]').value=hhmm(now);
+  // SNCF open data only spans ~31 days ahead: clamp the picker so
+  // out-of-range dates fail fast client-side instead of returning nothing.
+  var maxD=new Date(now);maxD.setDate(maxD.getDate()+31);
+  var di=document.querySelector('input[name=date]');
+  di.min=localDay(now);di.max=localDay(maxD);
   // keep the "after now" filter only while the date is still today
   document.querySelector('input[name=date]').addEventListener('change',function(){
     var n=new Date();
@@ -82,7 +93,9 @@ function drawStationMarkers(){
 try{setTimeout(function(){
   var L=window.L;if(!L)return;
   map=L.map('map').setView([46.5,2.5],6);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{attribution:'&copy;CARTO'}).addTo(map);
+  // OpenStreetMap tiles: CARTO's basemaps started requiring an API key and
+  // now serve an "API key required" placeholder instead of map content.
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',maxZoom:19}).addTo(map);
   routeLayer=L.layerGroup().addTo(map);
   drawStationMarkers();
 },800)}catch(e){console.log('map disabled')}
@@ -161,10 +174,20 @@ function search(){
 }
 function hunt(){
   var o=document.querySelector('select[name=origin]').value;if(!o)return;
-  loading(true,'hunting...');var p=new URLSearchParams({origin:o});
+  loading(true,'hunting...');var p=new URLSearchParams({direction:'from',origin:o});
   var dv=document.querySelector('input[name=date]').value;if(dv)p.set('date',dv);
   fetch('/api/broadcast?'+p).then(function(r){return r.json()}).then(function(trips){
-    loading(false);renderHunt(o,trips);drawRoute(o,null,trips);
+    loading(false);renderHunt(o,trips,'from');drawRoute(o,null,trips);
+  }).catch(function(){loading(false)});
+}
+// reverse hunt: every free trip ARRIVING at the destination (the one feature
+// the removed /tgvmax/ site had that this one lacked: "Arriver dans une gare")
+function huntArr(){
+  var d=document.querySelector('select[name=destination]').value;if(!d)return;
+  loading(true,'hunting arrivals...');var p=new URLSearchParams({direction:'to',destination:d});
+  var dv=document.querySelector('input[name=date]').value;if(dv)p.set('date',dv);
+  fetch('/api/broadcast?'+p).then(function(r){return r.json()}).then(function(trips){
+    loading(false);renderHunt(d,trips,'to');drawRouteTo(d,trips);
   }).catch(function(){loading(false)});
 }
 
@@ -179,6 +202,20 @@ function drawRoute(originName,destName,trips){
   }
   if(trips&&trips.length){trips.forEach(function(t){var dd=latlng(t.destination);if(dd)routeLayer.addLayer(L.circleMarker(dd,{radius:4,fillColor:'#3730a3',color:'#fff',weight:1,fillOpacity:0.5}))})}
   if(o&&d){var pts=[o,d];if(trips)trips.forEach(function(t){var dd=latlng(t.destination);if(dd)pts.push(dd)});map.fitBounds(L.latLngBounds(pts),{padding:[40,40],maxZoom:9})}
+}
+// reverse hunt map: anchor is the arrival station, spokes are origins
+function drawRouteTo(destName,trips){
+  if(!map||!routeLayer)return;routeLayer.clearLayers();
+  var d=latlng(destName);
+  if(d)routeLayer.addLayer(L.circleMarker(d,{radius:6,fillColor:'#3730a3',color:'#fff',weight:2,fillOpacity:1}));
+  var pts=d?[d]:[];
+  if(trips&&trips.length){trips.forEach(function(t){
+    var o=latlng(t.origin);if(!o)return;
+    routeLayer.addLayer(L.polyline([o,d],{color:'#3730a3',weight:1,dashArray:'5 8',opacity:0.5}));
+    routeLayer.addLayer(L.circleMarker(o,{radius:4,fillColor:'#10b981',color:'#fff',weight:1,fillOpacity:0.5}));
+    pts.push(o);
+  })}
+  if(pts.length)map.fitBounds(L.latLngBounds(pts),{padding:[40,40],maxZoom:9});
 }
 
 // click: detail + map + stop list
@@ -286,6 +323,7 @@ function priceKey(trip){
 // render
 function render(d){
   show('sum');hide('descentBox'); // descentres merged into direct
+  LAST_TRIPS=[];LAST_COMPS=[];
   var freeDc=d.decompositions.filter(function(c){return c.is_fully_max});
   var paidDc=d.decompositions.filter(function(c){return !c.is_fully_max});
   var allDirect = d.direct_free.slice();
@@ -338,22 +376,27 @@ function render(d){
     if(paidDc.length>15)document.getElementById('dpl').innerHTML+='<div class=e>+ '+(paidDc.length-15)+' more</div>'}
   else hide('detourPayBox');
 }
-function renderHunt(origin,trips){
+function renderHunt(anchor,trips,dir){
+  dir=dir||'from';
+  LAST_TRIPS=[];LAST_COMPS=[];
+  var key=dir==='to'?'origin':'destination';
+  var pre=dir==='to'?'free to ':'free from ';
   hide('detourBox');hide('detourPayBox');hide('payantBox');hide('descentBox');
   show('sum');show('directBox');
-  document.getElementById('sc').innerHTML='<span class="tag tag-m">'+trips.length+' free from '+disp(origin)+'</span>';
+  document.getElementById('sc').innerHTML='<span class="tag tag-m">'+trips.length+pre+disp(anchor)+'</span>';
   document.getElementById('fc').textContent='('+trips.length+')';
-  var g={};trips.forEach(function(t){var d=t.destination;if(!g[d])g[d]=[];g[d].push(t)});
+  var g={};trips.forEach(function(t){var k=t[key];if(!g[k])g[k]=[];g[k].push(t)});
   var h='';for(var d in g){h+='<div style="font-weight:bold;color:var(--hi);margin-top:4px">'+disp(d)+' ('+g[d].length+')</div>';h+=g[d].slice(0,4).map(trH).join('');if(g[d].length>4)h+='<div class=e>+ '+(g[d].length-4)+' more</div>'}
   document.getElementById('fl').innerHTML=h||'<div class=e>none</div>';
 }
 
 function priceCell(disp_str,est,dur){var c=est?'var(--y)':'var(--g)';return '<span class=stat-d title="'+dur+' min" style="color:'+c+'">'+disp_str+'</span>'}
 function trH(t){
+  var idx=LAST_TRIPS.length;LAST_TRIPS.push(t);
   var tag=t._descentre?'<span class="tag tag-c" title="book to '+disp(t.booked_to)+', get off here">desc</span>':'<span class="tag tag-m">'+t.train_number+'</span>';
   var last;
   if(t._descentre) last='<span class=stat-d title="booked through to '+disp(t.booked_to)+'">&darr;'+trunc(disp(t.booked_to),12)+'</span>';
   else if(t.is_free) last='<span class=stat-d>'+t.duration_min+'m</span>';
   else last=priceCell(t.price_display||'?',t.price_estimated,t.duration_min);
-  return '<div class=tr onclick="showTrip('+JSON.stringify(t).replace(/\"/g,'"')+')" title="click for detail"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span>'+tag+'<span class=t-route>'+trunc(disp(t.origin),18)+' &rarr; '+trunc(disp(t.destination),18)+'</span>'+last+'</div>'}
-function dcH(c){var L=c.legs.map(function(l){return trunc(disp(l.origin),9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(disp(c.destination),9)+'('+c.arrival_time+')';var cls=c.is_fully_max?'tag-m':'tag-p',label=c.is_fully_max?(c.max_legs+'M'):(c.max_legs+'M+'+c.paid_legs+'P');var last=c.is_fully_max?'<span class=stat-d>'+c.total_duration_min+'m</span>':priceCell(c.price_display||'?',c.price_estimated,c.total_duration_min);return '<div class=tr onclick="showComposite('+JSON.stringify(c).replace(/\"/g,'"')+')" title="click for detail"><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class="tag '+cls+'">'+label+'</span><span class=t-route>'+L+'</span>'+last+'</div>'}
+  return '<div class=tr onclick="showTripIdx('+idx+')" title="click for detail"><span class=t-time>'+t.departure_time+' &rarr; '+t.arrival_time+'</span>'+tag+'<span class=t-route>'+trunc(disp(t.origin),18)+' &rarr; '+trunc(disp(t.destination),18)+'</span>'+last+'</div>'}
+function dcH(c){var idx=LAST_COMPS.length;LAST_COMPS.push(c);var L=c.legs.map(function(l){return trunc(disp(l.origin),9)+'('+l.departure_time+')';}).join(' &rarr; ')+' &rarr; '+trunc(disp(c.destination),9)+'('+c.arrival_time+')';var cls=c.is_fully_max?'tag-m':'tag-p',label=c.is_fully_max?(c.max_legs+'M'):(c.max_legs+'M+'+c.paid_legs+'P');var last=c.is_fully_max?'<span class=stat-d>'+c.total_duration_min+'m</span>':priceCell(c.price_display||'?',c.price_estimated,c.total_duration_min);return '<div class=tr onclick="showCompIdx('+idx+')" title="click for detail"><span class=t-time>'+c.departure_time+' &rarr; '+c.arrival_time+'</span><span class="tag '+cls+'">'+label+'</span><span class=t-route>'+L+'</span>'+last+'</div>'}

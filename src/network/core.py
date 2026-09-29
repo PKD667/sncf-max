@@ -249,6 +249,20 @@ def broadcast(
     return report.all_free_trips
 
 
+def broadcast_to(
+    destination: str,
+    trip_date: Optional[date] = None,
+    config: Optional[SNCFConfig] = None,
+) -> List[Trip]:
+    """Find ALL free trips arriving at a station on a given date.
+
+    This is the 'who can get here for free today?' query - the reverse hunt.
+    """
+    finder = FreeTripFinder(config=config)
+    report = finder.find_all_to(destination=destination, trip_date=trip_date)
+    return report.all_free_trips
+
+
 # ---------------------------------------------------------------------------
 # Convenience
 # ---------------------------------------------------------------------------
@@ -257,5 +271,6 @@ __all__ = [
     "search",
     "autobook",
     "broadcast",
+    "broadcast_to",
     "SearchResult",
 ]

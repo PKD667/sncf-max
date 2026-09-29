@@ -375,6 +375,39 @@ class SNCFMaxClient:
 
         return free_dict, paid_dict
 
+    def search_all_from_origins_split(
+        self,
+        destination: str,
+        origins: List[str],
+        trip_date: Optional[date] = None,
+        workers: int = 8,
+    ) -> Tuple[Dict[str, List[Trip]], Dict[str, List[Trip]]]:
+        """Parallel reverse search, returning (free_dict, paid_dict) per origin."""
+        if trip_date is None:
+            trip_date = date.today() + timedelta(days=1)
+        destination_full = get_station_name(destination)
+        free_dict: Dict[str, List[Trip]] = {}
+        paid_dict: Dict[str, List[Trip]] = {}
+
+        def _fetch(orig: str) -> Tuple[str, List[Trip], List[Trip]]:
+            free, paid = self.search_all_trips(
+                origin=orig,
+                destination=destination_full,
+                trip_date=trip_date,
+            )
+            return (orig, free, paid)
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {ex.submit(_fetch, o): o for o in origins}
+            for future in as_completed(futures):
+                orig, free, paid = future.result()
+                if free:
+                    free_dict[orig] = free
+                if paid:
+                    paid_dict[orig] = paid
+
+        return free_dict, paid_dict
+
     def get_routes(self, limit: int = 100) -> List[Tuple[str, str]]:
         params: Dict[str, Any] = {
             "select": "origine, destination",
