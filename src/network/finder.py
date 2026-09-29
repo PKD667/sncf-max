@@ -38,6 +38,38 @@ def _get_scan_stations() -> List[str]:
     return _SCAN_STATIONS
 
 
+# Hunt scan priority: international destinations and the big hubs first.
+# The station list is alphabetical, so a naive [:max_routes] slice only
+# ever reaches A..Bp - Lyon, Marseille and every international station
+# silently never got hunted. Unknown names are skipped (guarded below),
+# so this list can mention stations freely.
+_PRIORITY_FIRST = [
+    # International (TGV Max dataset coverage varies: Luxembourg and
+    # Belgium have free seats; Switzerland/Germany/Spain mostly paid).
+    "BRUXELLES MIDI", "LUXEMBOURG", "GENEVE CORNAVIN", "BASEL SBB",
+    "ZURICH HB", "FRANKFURT AM MAIN HBF", "FRANKFURT (MAIN) SUD",
+    "STUTTGART HBF", "MUNCHEN HBF", "FREIBURG (BREISGAU) HBF",
+    "KARLSRUHE HBF", "TORINO PORTA SUSA", "MILANO PORTA GARIBALDI",
+    "BARCELONA SANTS",
+    # Big domestic hubs.
+    "PARIS (intramuros)", "LYON (intramuros)", "MARSEILLE ST CHARLES",
+    "BORDEAUX ST JEAN", "LILLE (intramuros)", "NANTES", "STRASBOURG",
+    "RENNES", "TOULOUSE MATABIAU", "MONTPELLIER SAINT ROCH",
+    "NICE VILLE", "DIJON VILLE", "ANGERS ST LAUD", "TOURS", "LE MANS",
+    "AVIGNON TGV", "AIX EN PROVENCE TGV", "MARNE LA VALLEE CHESSY",
+    "AEROPORT ROISSY CDG 2 TGV", "MASSY TGV", "LYON PART DIEU",
+    "LILLE FLANDRES", "VALENCE TGV AUVERGNE RHONE ALPES",
+]
+
+
+def _scan_order(fixed: str, max_routes: int) -> List[str]:
+    """Hunt scan list: priority stations first, then alphabetical rest."""
+    pool = {s for s in _get_scan_stations() if s.upper() != fixed.upper()}
+    prio = [s for s in _PRIORITY_FIRST if s in pool]
+    rest = sorted(pool - set(prio))
+    return (prio + rest)[:max_routes]
+
+
 @dataclass
 class FreeTripBucket:
     label: str
@@ -97,7 +129,7 @@ class FreeTripFinder:
         origin: str,
         trip_date: Optional[date] = None,
         destinations: Optional[List[str]] = None,
-        max_routes: int = 50,
+        max_routes: int = 150,
     ) -> FinderReport:
         """Parallel broadcast: find every free trip from *origin*."""
         if trip_date is None:
@@ -105,10 +137,7 @@ class FreeTripFinder:
         origin_full = get_station_name(origin)
 
         if destinations is None:
-            destinations = [
-                d for d in _get_scan_stations()
-                if d.upper() != origin_full.upper()
-            ][:max_routes]
+            destinations = _scan_order(origin_full, max_routes)
 
         # parallel fetch
         free_dict, _paid_dict = self._client.search_all_to_destinations_split(
@@ -148,7 +177,7 @@ class FreeTripFinder:
         destination: str,
         trip_date: Optional[date] = None,
         origins: Optional[List[str]] = None,
-        max_routes: int = 50,
+        max_routes: int = 150,
     ) -> FinderReport:
         """Parallel reverse broadcast: find every free trip TO *destination*.
 
@@ -160,10 +189,7 @@ class FreeTripFinder:
         destination_full = get_station_name(destination)
 
         if origins is None:
-            origins = [
-                o for o in _get_scan_stations()
-                if o.upper() != destination_full.upper()
-            ][:max_routes]
+            origins = _scan_order(destination_full, max_routes)
 
         # parallel fetch
         free_dict, _paid_dict = self._client.search_all_from_origins_split(

@@ -172,23 +172,23 @@ default_config = SNCFConfig.from_env()
 
 # Known station names for convenience
 STATIONS = {
-    # Paris
+    # Paris - the dataset aggregates all Paris stations as intramuros.
     "paris": "PARIS (intramuros)",
-    "paris_lyon": "PARIS GARE DE LYON",
-    "paris_montparnasse": "PARIS MONTPARNASSE 1 ET 2",
-    "paris_nord": "PARIS NORD",
-    "paris_est": "PARIS EST",
+    "paris_lyon": "PARIS (intramuros)",
+    "paris_montparnasse": "PARIS (intramuros)",
+    "paris_nord": "PARIS (intramuros)",
+    "paris_est": "PARIS (intramuros)",
     
     # Major cities
     "lyon": "LYON (intramuros)",
     "marseille": "MARSEILLE ST CHARLES",
     "bordeaux": "BORDEAUX ST JEAN",
     "toulouse": "TOULOUSE MATABIAU",
-    "lille": "LILLE FLANDRES",
+    "lille": "LILLE (intramuros)",
     "nice": "NICE VILLE",
     "nantes": "NANTES",
     "strasbourg": "STRASBOURG",
-    "montpellier": "MONTPELLIER ST ROCH",
+    "montpellier": "MONTPELLIER SAINT ROCH",
     "rennes": "RENNES",
     
     # Other popular destinations
@@ -196,7 +196,7 @@ STATIONS = {
     "aix": "AIX EN PROVENCE TGV",
     "grenoble": "GRENOBLE",
     "dijon": "DIJON VILLE",
-    "angers": "ANGERS ST LAUD",
+    "angers": "ANGERS SAINT LAUD",
     "tours": "ST PIERRE DES CORPS",
     "le_mans": "LE MANS",
     "reims": "CHAMPAGNE ARDENNE TGV",
@@ -210,7 +210,7 @@ STATIONS = {
     "massy": "MASSY TGV",
     "valence": "VALENCE TGV AUVERGNE RHONE ALPES",
     "creusot": "LE CREUSOT MONTCEAU MONTCHANIN",
-    "macon": "MACON LOCHE",
+    "macon": "MACON VILLE",
 }
 
 
