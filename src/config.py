@@ -28,9 +28,14 @@ def load_dotenv(dotenv_paths: Optional[List[Path]] = None) -> None:
         ]
     
     for dotenv_path in dotenv_paths:
-        if dotenv_path.exists():
-            _parse_dotenv(dotenv_path)
-            return  # Stop after first found
+        try:
+            if dotenv_path.exists():
+                _parse_dotenv(dotenv_path)
+                return  # Stop after first found
+        except OSError:
+            # Unreadable path (e.g. another user's $HOME when running as a
+            # service account): skip it instead of crashing the import.
+            continue
 
 
 def _parse_dotenv(path: Path) -> None:

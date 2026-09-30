@@ -62,12 +62,17 @@
         # systemd sandbox does not provide, and every login crashes.
         # Xvfb rides along too: DataDome walls headless browsers, so the
         # login retries once headed under a virtual display.
+        # HOME points at a writable dir under the service data volume:
+        # the sandbox leaves no writable home (fontconfig + Firefox
+        # profiles crash without one).
         sncf-max-web = pkgs.writeShellApplication {
           name = "sncf-max-web";
           runtimeInputs = [ (python.withPackages (ps: pythonDeps)) pkgs.xvfb ];
           text = ''
             export PYTHONPATH="${self}/src:${self}:''${PYTHONPATH:-}"
             export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"
+            export HOME=/data/services/max/.home
+            mkdir -p "$HOME"
             exec python3 ${self}/frontend/server.py "$@"
           '';
         };
