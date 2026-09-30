@@ -81,15 +81,74 @@ class ExactTariffProvider:
         with open(path, encoding="utf-8") as f:
             return json.load(f)
 
+    @staticmethod
+    def _uic(name: str) -> Optional[str]:
+        uo = stn.uic(name)
+        if uo:
+            return uo
+        # stations.json carries no UIC map; the TER cache joins 266 MAX
+        # stations to UIC via GTFS names + coordinates.
+        try:
+            from network import ter as _ter
+            return _ter._name_to_uic().get(name)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _candidate_uics(name: str) -> List[str]:
+        """UICs usable for a station: its own + same-metro stops.
+
+        Tariff tables key on specific stations (Paris Gare de Lyon =
+        87686006) while queries use aggregates (PARIS (intramuros)).
+        Same-metro stops (TER-cache stops within 8 km of the query
+        coordinates) close that gap.
+        """
+        import math
+        cands = []
+        u = ExactTariffProvider._uic(name)
+        if u:
+            cands.append(u)
+        try:
+            from network import ter as _ter
+            c = stn.coords(name)
+            if c:
+                (lat1, lon1) = c
+                for su, meta in _ter._cache().get("stops", {}).items():
+                    if meta[1] is None or su in cands:
+                        continue
+                    p1, p2 = math.radians(lat1), math.radians(meta[1])
+                    dp = math.radians(meta[1] - lat1)
+                    dl = math.radians(meta[2] - lon1)
+                    h = (math.sin(dp / 2) ** 2
+                         + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2)
+                    if 2 * 6371.0 * math.asin(math.sqrt(h)) <= 8.0:
+                        cands.append(su)
+        except Exception:
+            pass
+        return cands
+
     def fare(self, origin: str, destination: str, carrier: str) -> Optional[Fare]:
-        uo, ud = stn.uic(origin), stn.uic(destination)
-        if not uo or not ud:
+        # The tables only cover long-distance carriers; TER and coaches
+        # have their own providers (kilometric grid / per-km band).
+        want = carrier.upper()
+        if want not in ("TGV", "OUIGO", "INTERCITES"):
             return None
-        row = self._table().get(f"{uo}|{ud}") or self._table().get(f"{ud}|{uo}")
-        if not row:
+        table = self._table()
+        if not table:
             return None
-        lo, hi, basis = row
-        return Fare(min_cents=int(lo), max_cents=int(hi), exact=True, basis=basis)
+        rows = []
+        for uo in self._candidate_uics(origin):
+            for ud in self._candidate_uics(destination):
+                for key in (f"{uo}|{ud}", f"{ud}|{uo}"):
+                    cell = table.get(key)
+                    if cell and want in cell:
+                        rows.append(cell[want])
+        if not rows:
+            return None
+        lo = min(r[0] for r in rows)
+        hi = max(r[1] for r in rows)
+        return Fare(min_cents=lo, max_cents=hi, exact=True,
+                    basis="SNCF open tariff grid")
 
 
 class TerKilometricProvider:

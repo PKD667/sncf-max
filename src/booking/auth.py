@@ -37,6 +37,11 @@ class EmailCodeRequired(AuthenticationError):
     pass
 
 
+class _Blocked(AuthenticationError):
+    """Internal: bot wall instead of a login form (retry may help)."""
+    pass
+
+
 class SNCFAuthenticator:
     """Handles authentication with SNCF Connect.
     
@@ -157,22 +162,28 @@ class SNCFAuthenticator:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
     
-    async def _start_browser(self) -> None:
-        """Start the browser instance."""
+    async def _start_browser(self, headed: bool = False) -> None:
+        """Start the browser instance.
+
+        headed=True runs a real (non-headless) Firefox, which carries a
+        far less automatable fingerprint for DataDome. Needs a display:
+        call _ensure_xvfb() first on servers (or run under xvfb-run).
+        """
         playwright = await async_playwright().start()
         self._playwright = playwright
         
         # Use Firefox by default for better bot evasion
         # SNCF Connect uses DataDome which is more strict with Chromium
+        headless = self.config.HEADLESS and not headed
         if self.use_firefox:
             self._browser = await playwright.firefox.launch(
-                headless=self.config.HEADLESS,
+                headless=headless,
                 slow_mo=self.config.SLOW_MO if self.config.DEBUG else 50,
             )
             user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0'
         else:
             self._browser = await playwright.chromium.launch(
-                headless=self.config.HEADLESS,
+                headless=headless,
                 slow_mo=self.config.SLOW_MO if self.config.DEBUG else 50,
                 args=[
                     '--disable-blink-features=AutomationControlled',
@@ -189,7 +200,7 @@ class SNCFAuthenticator:
         )
     
     async def close(self) -> None:
-        """Close the browser and clean up."""
+        """Close the browser and clean up (including our Xvfb, if any)."""
         try:
             if self._context:
                 await self._context.close()
@@ -208,6 +219,48 @@ class SNCFAuthenticator:
         except Exception:
             if self.config.DEBUG:
                 print("Warning: error while stopping Playwright in authenticator.")
+        self._browser = None
+        self._context = None
+        xvfb = getattr(self, "_xvfb", None)
+        if xvfb is not None:
+            self._xvfb = None
+            try:
+                xvfb.terminate()
+            except Exception:
+                pass
+
+    def _ensure_xvfb(self) -> bool:
+        """Start a virtual display for headed browsers. Returns success."""
+        import os
+        import shutil
+        import subprocess
+        if os.environ.get("DISPLAY"):
+            return True
+        if shutil.which("Xvfb") is None:
+            return False
+        try:
+            proc = subprocess.Popen(
+                ["Xvfb", ":99", "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            return False
+        import time as _time
+        for _ in range(50):
+            if proc.poll() is not None:
+                return False
+            if os.path.exists("/tmp/.X11-unix/X99"):
+                break
+            _time.sleep(0.1)
+        else:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return False
+        os.environ["DISPLAY"] = ":99"
+        self._xvfb = proc
+        return True
     
     async def _take_screenshot(self, page: Page, name: str) -> None:
         """Take a debug screenshot."""
@@ -824,7 +877,45 @@ class SNCFAuthenticator:
         On "connected" the session is available as self.session (and saved
         to disk unless persist_session=False). On EmailCodeRequired the
         browser page stays open: finish with login_submit_code().
+
+        Headless browsers get walled by DataDome, so a blocked first
+        attempt is retried once in a headed Firefox under Xvfb (a real
+        display changes the fingerprint decisively). Set SNCF_NO_HEADED=1
+        to disable the retry.
         """
+        import os
+        try:
+            return await self._login_start_once(credentials, on_captcha)
+        except _Blocked:
+            pass
+        if os.environ.get("SNCF_NO_HEADED"):
+            raise AuthenticationError(
+                "SNCF bot protection (DataDome) blocked this login attempt."
+            )
+        # Retry headed: real display, real rendering, far less detectable.
+        await self.close()
+        if not self._ensure_xvfb():
+            raise AuthenticationError(
+                "SNCF bot protection (DataDome) blocked this login attempt "
+                "and no virtual display is available for a headed retry."
+            )
+        try:
+            await self._start_browser(headed=True)
+            return await self._login_start_once(credentials, on_captcha)
+        except _Blocked as e:
+            await self.close()
+            raise AuthenticationError(
+                "SNCF bot protection (DataDome) blocked this login attempt "
+                "even with a headed browser. Booking needs a manual login "
+                "for now - try again later."
+            ) from e
+
+    async def _login_start_once(
+        self,
+        credentials: UserCredentials,
+        on_captcha: Optional[Callable[[], None]] = None,
+    ) -> str:
+        """Single password-submit pass. Raises _Blocked on a bot wall."""
         if not credentials.email or not credentials.password:
             raise AuthenticationError("Email and password are required")
 
@@ -850,10 +941,8 @@ class SNCFAuthenticator:
                 login_page, "email_input", timeout=8000
             ) is None:
                 await self._take_screenshot(login_page, "blocked")
-                raise AuthenticationError(
-                    "SNCF bot protection (DataDome) blocked this login "
-                    "attempt from the server. Booking needs a manual login "
-                    "for now - try again later."
+                raise _Blocked(
+                    "SNCF bot protection (DataDome) wall instead of a form."
                 )
 
             # Fill in email in the login page/popup
