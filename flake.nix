@@ -60,9 +60,11 @@
         # booking) and points Playwright at them: without
         # PLAYWRIGHT_BROWSERS_PATH the service looks in ~/.cache, which the
         # systemd sandbox does not provide, and every login crashes.
+        # Xvfb rides along too: DataDome walls headless browsers, so the
+        # login retries once headed under a virtual display.
         sncf-max-web = pkgs.writeShellApplication {
           name = "sncf-max-web";
-          runtimeInputs = [ (python.withPackages (ps: pythonDeps)) ];
+          runtimeInputs = [ (python.withPackages (ps: pythonDeps)) pkgs.xvfb ];
           text = ''
             export PYTHONPATH="${self}/src:${self}:''${PYTHONPATH:-}"
             export PLAYWRIGHT_BROWSERS_PATH="${pkgs.playwright-driver.browsers}"

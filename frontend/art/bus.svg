@@ -1,13 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" role="img" aria-label="Coach">
-  <!-- stylized coach: tall body, big windshield, amber stripe -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" role="img" aria-label="FlixBus coach">
+  <defs>
+    <linearGradient id="buw" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f4ffe0"/><stop offset="1" stop-color="#b8e05a"/>
+    </linearGradient>
+  </defs>
   <line x1="0" y1="106" x2="400" y2="106" stroke="#e5e7eb" stroke-width="3"/>
-  <path d="M60,102 L60,40 Q60,30 70,30 L310,30 Q320,30 326,38 L344,66 Q348,72 348,78 L348,96 Q348,102 342,102 Z" fill="#d97706"/>
-  <path d="M60,102 L60,92 L348,92 L348,96 Q348,102 342,102 Z" fill="#92400e"/>
-  <path d="M310,36 L322,36 Q328,36 332,42 L344,64 L310,64 Z" fill="#fef3c7"/>
-  <rect x="70" y="42" width="220" height="14" rx="7" fill="#1f2937"/>
-  <rect x="70" y="66" width="278" height="8" fill="#fbbf24"/>
-  <text x="150" y="88" font-family="monospace" font-size="11" font-weight="bold" fill="#fffbeb" letter-spacing="3">BUS</text>
-  <rect x="60" y="102" width="282" height="4" fill="#78350f"/>
+  <!-- flix green body -->
+  <path d="M60,102 L60,40 Q60,30 70,30 L310,30 Q320,30 326,38 L344,66 Q348,72 348,78 L348,96 Q348,102 342,102 Z" fill="#73d700"/>
+  <rect x="60" y="30" width="252" height="9" fill="#4a9e00"/>
+  <!-- dark glass band + windshield -->
+  <path d="M310,36 L322,36 Q328,36 332,42 L344,64 L310,64 Z" fill="url(#buw)"/>
+  <rect x="70" y="42" width="220" height="15" rx="7" fill="#1e2d12"/>
+  <rect x="70" y="66" width="278" height="7" fill="#ffffff"/>
+  <text x="150" y="89" font-family="monospace" font-size="11" font-weight="bold" fill="#20300f" letter-spacing="3">FLIXBUS</text>
+  <rect x="60" y="102" width="282" height="4" fill="#20300f"/>
   <g fill="#1f2937"><circle cx="120" cy="104" r="9"/><circle cx="290" cy="104" r="9"/></g>
-  <g fill="#9ca3af"><circle cx="120" cy="104" r="3.5"/><circle cx="290" cy="104" r="3.5"/></g>
+  <g fill="#d9f99d"><circle cx="120" cy="104" r="3.5"/><circle cx="290" cy="104" r="3.5"/></g>
 </svg>
