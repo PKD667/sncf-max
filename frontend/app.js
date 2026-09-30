@@ -141,20 +141,39 @@ function sncfStart(){
   var email=document.querySelector('input[name=sncf_email]').value;
   var password=document.querySelector('input[name=sncf_password]').value;
   if(!email||!password){alert('Email and password required');return;}
-  loading(true,'contacting SNCF (can take up to a minute)...');
+  loading(true,'starting SNCF login...');
   fetch('/api/auth/sncf/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email,password:password})})
     .then(function(r){return r.json()}).then(function(data){
-      loading(false);
-      if(data.status==='connected'){sncfRemember(data);hideDetail();}
-      else if(data.status==='code_required'){
+      if(data.status==='working'){
         SNCF_AUTH.pending=data.login_id;
-        document.getElementById('sncfCodeWrap').style.display='block';
-        var btn=document.getElementById('sncfGoBtn');
-        btn.textContent='Verify code';btn.setAttribute('onclick','sncfCode()');
-        document.getElementById('st').textContent='SNCF emailed you a code — enter it above';
+        document.getElementById('st').textContent='SNCF login running in the background — this takes a minute or two, keep browsing';
+        sncfPoll();
       }
-      else{alert(data.error||'Login failed');}
+      else{loading(false);alert(data.error||'Login failed');}
     }).catch(function(){loading(false);alert('Request failed')});
+}
+
+var _sncfTimer=null;
+function sncfStopPoll(){if(_sncfTimer){clearInterval(_sncfTimer);_sncfTimer=null}}
+function sncfPoll(){
+  sncfStopPoll();
+  _sncfTimer=setInterval(function(){
+    if(!SNCF_AUTH.pending){sncfStopPoll();return}
+    fetch('/api/auth/sncf/status?login_id='+encodeURIComponent(SNCF_AUTH.pending))
+      .then(function(r){return r.json()}).then(function(data){
+        if(data.status==='connected'){sncfStopPoll();loading(false);sncfRemember({login_id:SNCF_AUTH.pending,email:data.email});hideDetail();}
+        else if(data.status==='code_required'){
+          sncfStopPoll();loading(false);
+          document.getElementById('sncfCodeWrap').style.display='block';
+          var btn=document.getElementById('sncfGoBtn');
+          if(btn){btn.textContent='Verify code';btn.setAttribute('onclick','sncfCode()')}
+          document.getElementById('st').textContent='SNCF emailed you a code — enter it above';
+        }
+        else if(data.status==='error'){sncfStopPoll();loading(false);SNCF_AUTH.pending=null;alert(data.error||'Login failed');}
+        else if(data.status==='unknown'){sncfStopPoll();loading(false);SNCF_AUTH.pending=null;alert('Login expired (server restarted?) — please start over');}
+        // 'working': keep waiting, spinner stays
+      }).catch(function(){/* next tick retries */});
+  },3000);
 }
 
 function sncfCode(){

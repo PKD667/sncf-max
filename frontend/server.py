@@ -88,9 +88,18 @@ def _purge_logins() -> None:
     """Drop expired logins (called on every auth endpoint hit)."""
     now = time.time()
     with _logins_lock:
-        dead = [lid for lid, rec in _logins.items() if rec["expires"] < now]
+        dead = [lid for lid, rec in _logins.items()
+                if rec["expires"] < now and not _thread_alive(rec)]
     for lid in dead:
         _drop_login(lid)
+
+
+def _thread_alive(rec: dict) -> bool:
+    t = rec.get("thread")
+    try:
+        return t is not None and t.is_alive()
+    except Exception:
+        return False
 
 
 def _session_for(login_id: str):
@@ -280,19 +289,85 @@ def api_broadcast():
 
 @app.route("/api/auth/sncf/status")
 def api_sncf_auth_status():
-    """Check whether a login_id holds a live SNCF session."""
+    """Report a login_id's state: working | code_required | connected | error."""
     login_id = request.args.get("login_id", "")
-    session = _session_for(login_id)
-    if session is None:
-        return jsonify({"connected": False})
+    _purge_logins()
     with _logins_lock:
-        email = _logins.get(login_id, {}).get("email")
-    return jsonify({"connected": True, "email": email})
+        rec = _logins.get(login_id or "")
+    if rec is None:
+        return jsonify({"connected": False, "status": "unknown"})
+    status = rec.get("status") or ("connected" if rec.get("session") else "working")
+    out = {"connected": status == "connected", "status": status,
+           "email": rec.get("email")}
+    if rec.get("error"):
+        out["error"] = rec["error"]
+    return jsonify(out)
+
+
+def _do_login_start(login_id: str, email: str, password: str) -> None:
+    """Background password-submit pass for a login record.
+
+    Runs in its own thread (with its own asyncio loop) so the HTTP
+    request can return immediately: SNCF logins take minutes and any
+    reverse proxy in front of us times out long before.
+    """
+    from booking.auth import SNCFAuthenticator, EmailCodeRequired, AuthenticationError
+    from models import UserCredentials
+    from config import default_config
+
+    with _logins_lock:
+        rec = _logins.get(login_id)
+    if rec is None:
+        return
+    # Never persisted: the session lives in server memory only.
+    auth = SNCFAuthenticator(default_config, persist_session=False)
+    with _logins_lock:
+        rec["auth"] = auth
+    try:
+        outcome = asyncio.run(
+            auth.login_start(UserCredentials(email=email, password=password)))
+    except EmailCodeRequired as e:
+        with _logins_lock:
+            rec["status"] = "code_required"   # browser stays open, waiting
+            rec["error"] = None
+            rec["expires"] = time.time() + PENDING_TTL_SECONDS
+        return
+    except AuthenticationError as e:
+        err = str(e)
+    except Exception as e:
+        err = f"login failed: {e}"
+    else:
+        if outcome == "connected" and auth.session is not None:
+            with _logins_lock:
+                rec["auth"] = None
+                rec["session"] = auth.session
+                rec["status"] = "connected"
+                rec["error"] = None
+                rec["expires"] = time.time() + LOGIN_TTL_SECONDS
+            try:
+                asyncio.run(auth.close())
+            except Exception:
+                pass
+            return
+        err = "login did not complete"
+    try:
+        asyncio.run(auth.close())
+    except Exception:
+        pass
+    with _logins_lock:
+        rec["auth"] = None
+        rec["status"] = "error"
+        rec["error"] = err
+        rec["expires"] = time.time() + PENDING_TTL_SECONDS
 
 
 @app.route("/api/auth/sncf/start", methods=["POST"])
 def api_sncf_auth_start():
-    """Submit SNCF email+password. Returns connected or code_required."""
+    """Launch the SNCF password step in the background. Returns at once.
+
+    The browser flow takes minutes; poll GET status?login_id= for
+    working -> code_required | connected | error.
+    """
     _purge_logins()
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip()
@@ -302,60 +377,19 @@ def api_sncf_auth_start():
         return jsonify({"error": "valid email and password required"}), 400
 
     with _logins_lock:
-        pending = sum(1 for r in _logins.values() if r.get("session") is None)
-        if pending >= MAX_PENDING_LOGINS:
+        busy = sum(1 for r in _logins.values() if r.get("session") is None)
+        if busy >= MAX_PENDING_LOGINS + 3:
             return jsonify({"error": "too many logins in progress, try again shortly"}), 429
-
-    from booking.auth import SNCFAuthenticator, EmailCodeRequired, AuthenticationError
-    from models import UserCredentials
-    from config import default_config
-
-    # Never persisted: the session lives in server memory only.
-    auth = SNCFAuthenticator(default_config, persist_session=False)
-    try:
-        outcome = asyncio.run(
-            auth.login_start(UserCredentials(email=email, password=password))
-        )
-    except EmailCodeRequired as e:
         login_id = secrets.token_urlsafe(24)
-        with _logins_lock:
-            _logins[login_id] = {
-                "auth": auth,           # live browser waiting for the code
-                "session": None,
-                "email": email,
-                "expires": time.time() + PENDING_TTL_SECONDS,
-            }
-        return jsonify({"status": "code_required", "login_id": login_id,
-                        "email": email, "message": str(e)})
-    except AuthenticationError as e:
-        try:
-            asyncio.run(auth.close())
-        except Exception:
-            pass
-        return jsonify({"error": str(e)}), 401
-    except Exception as e:
-        try:
-            asyncio.run(auth.close())
-        except Exception:
-            pass
-        return jsonify({"error": f"login failed: {e}"}), 502
-
-    # Connected without a code challenge. The login browser is done;
-    # booking spawns its own browser from the stored session.
-    assert outcome == "connected"
-    login_id = secrets.token_urlsafe(24)
-    with _logins_lock:
-        _logins[login_id] = {
-            "auth": None,
-            "session": auth.session,
-            "email": email,
-            "expires": time.time() + LOGIN_TTL_SECONDS,
-        }
-    try:
-        asyncio.run(auth.close())
-    except Exception:
-        pass
-    return jsonify({"status": "connected", "login_id": login_id, "email": email})
+        rec = {"auth": None, "session": None, "email": email,
+               "status": "working", "error": None, "thread": None,
+               "expires": time.time() + PENDING_TTL_SECONDS}
+        _logins[login_id] = rec
+        t = threading.Thread(target=_do_login_start,
+                             args=(login_id, email, password), daemon=True)
+        rec["thread"] = t
+    t.start()
+    return jsonify({"status": "working", "login_id": login_id, "email": email})
 
 
 @app.route("/api/auth/sncf/code", methods=["POST"])
@@ -368,7 +402,11 @@ def api_sncf_auth_code():
 
     with _logins_lock:
         rec = _logins.get(login_id)
-    if rec is None or rec.get("session") is not None:
+    if rec is None:
+        return jsonify({"error": "login expired or unknown, start over"}), 404
+    if rec.get("status") == "working":
+        return jsonify({"error": "login still working, wait a moment"}), 409
+    if rec.get("status") != "code_required" or rec.get("session") is not None:
         return jsonify({"error": "login expired or unknown, start over"}), 404
     if not code:
         return jsonify({"error": "verification code required"}), 400
@@ -384,6 +422,8 @@ def api_sncf_auth_code():
     with _logins_lock:
         rec["session"] = session
         rec["auth"] = None
+        rec["status"] = "connected"
+        rec["error"] = None
         rec["expires"] = time.time() + LOGIN_TTL_SECONDS
     return jsonify({"status": "connected", "login_id": login_id,
                     "email": rec.get("email")})
