@@ -240,39 +240,75 @@ class SNCFAuthenticator:
                 xvfb.terminate()
             except Exception:
                 pass
+        # If WE set DISPLAY for our Xvfb, unpublish it: a later login in
+        # this same process must not inherit a dead display (it would
+        # fail with "cannot open display" instead of starting its own).
+        import os as _os
+        if getattr(self, "_xvfb_display", None):
+            if _os.environ.get("DISPLAY") == self._xvfb_display:
+                del _os.environ["DISPLAY"]
+            self._xvfb_display = None
+
+    @staticmethod
+    def _display_alive(disp) -> bool:
+        """True if an X socket for this DISPLAY exists right now."""
+        import os as _os
+        import re as _re
+        m = _re.match(r"^:(\d+)", disp or "")
+        if not m:
+            return False
+        return _os.path.exists(f"/tmp/.X11-unix/X{m.group(1)}")
 
     def _ensure_xvfb(self) -> bool:
-        """Start a virtual display for headed browsers. Returns success."""
+        """Provide a working display for headed browsers. Returns success.
+
+        Never trusts a bare DISPLAY value: a previous login's Xvfb may be
+        dead while DISPLAY still points at it. Reuses a live display if
+        one answers, else starts our own Xvfb on the first free number.
+        """
         import os
         import shutil
         import subprocess
-        if os.environ.get("DISPLAY"):
+        if shutil.which("Xvfb") is None and not self._display_alive(
+            os.environ.get("DISPLAY")
+        ):
+            return False
+        if self._display_alive(os.environ.get("DISPLAY")):
             return True
-        if shutil.which("Xvfb") is None:
-            return False
-        try:
-            proc = subprocess.Popen(
-                ["Xvfb", ":99", "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            return False
-        import time as _time
-        for _ in range(50):
-            if proc.poll() is not None:
-                return False
-            if os.path.exists("/tmp/.X11-unix/X99"):
-                break
-            _time.sleep(0.1)
-        else:
+        for n in range(100, 160):
+            sock = f"/tmp/.X11-unix/X{n}"
+            lock = f"/tmp/.X{n}-lock"
+            if os.path.exists(sock) or os.path.exists(lock):
+                continue
             try:
-                proc.terminate()
+                proc = subprocess.Popen(
+                    ["Xvfb", f":{n}", "-screen", "0", "1920x1080x24",
+                     "-nolisten", "tcp"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
             except Exception:
-                pass
-            return False
-        os.environ["DISPLAY"] = ":99"
-        self._xvfb = proc
-        return True
+                continue
+            import time as _time
+            alive = False
+            for _ in range(100):
+                if proc.poll() is not None:
+                    break
+                if os.path.exists(sock):
+                    _time.sleep(0.5)  # grace: let it finish init
+                    alive = proc.poll() is None
+                    break
+                _time.sleep(0.1)
+            if not alive:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                continue
+            os.environ["DISPLAY"] = f":{n}"
+            self._xvfb = proc
+            self._xvfb_display = f":{n}"
+            return True
+        return False
     
     async def _take_screenshot(self, page: Page, name: str) -> None:
         """Take a debug screenshot."""
