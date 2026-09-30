@@ -173,12 +173,24 @@ class SNCFAuthenticator:
         self._playwright = playwright
         
         # Use Firefox by default for better bot evasion
-        # SNCF Connect uses DataDome which is more strict with Chromium
+        # SNCF Connect uses DataDome which is more strict with Chromium.
+        # The service sandbox forbids user namespaces, so Firefox's own
+        # sandbox must be off (else launch hangs in CanCreateUserNamespace
+        # until the launch timeout): MOZ_FAKE_NO_SANDBOX is what Mozilla's
+        # own container automation uses.
+        import os
         headless = self.config.HEADLESS and not headed
+        sandbox_off = {
+            "MOZ_FAKE_NO_SANDBOX": "1",
+            "MOZ_DISABLE_CONTENT_SANDBOX": "1",
+            "MOZ_DISABLE_GMP_SANDBOX": "1",
+        }
         if self.use_firefox:
             self._browser = await playwright.firefox.launch(
                 headless=headless,
                 slow_mo=self.config.SLOW_MO if self.config.DEBUG else 50,
+                timeout=60000,
+                env={**os.environ, **sandbox_off},
             )
             user_agent = 'Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0'
         else:
