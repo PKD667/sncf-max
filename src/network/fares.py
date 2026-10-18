@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from network import timetables
 from pathlib import Path
 from typing import Dict, List, Optional, Protocol
 import json
@@ -233,8 +234,18 @@ REGISTRY: List[FareProvider] = [
 ]
 
 
-@lru_cache(maxsize=4096)
 def _coords_any(name: str):
+    """Coordinates for a station, TER halt or coach stop (see _coords_for)."""
+    return _coords_for(name, _timetable_stamp())
+
+
+def _timetable_stamp():
+    """Identity of the TER and coach timetables the memos below depend on."""
+    return (timetables.stamp("ter_timetable.json"), timetables.stamp("bus_timetable.json"))
+
+
+@lru_cache(maxsize=4096)
+def _coords_for(name: str, _stamp):
     """Coordinates for a MAX station, TER halt or coach stop name.
 
     Memoised because the fallbacks below scan every TER halt and every coach
@@ -279,8 +290,13 @@ def _coords_km(origin: str, destination: str) -> Optional[float]:
     return 2 * r * math.asin(math.sqrt(h))
 
 
-@lru_cache(maxsize=8192)
 def estimate_fare(origin: str, destination: str, carrier: str = "TGV") -> Fare:
+    """Best available fare for a leg (see _estimate_fare_for)."""
+    return _estimate_fare_for(origin, destination, carrier, _timetable_stamp())
+
+
+@lru_cache(maxsize=8192)
+def _estimate_fare_for(origin: str, destination: str, carrier: str, _stamp) -> Fare:
     """Best available fare for a leg: exact tariff if known, else per-km.
 
     A pure function of its arguments over static timetable data, so it is

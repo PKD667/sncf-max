@@ -35,6 +35,9 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from network import timetables  # noqa: E402
+
 csv.field_size_limit(10 ** 7)
 
 NETWORK_DIR = Path(__file__).resolve().parent.parent / "src" / "network"
@@ -85,6 +88,7 @@ def _csv(z: zipfile.ZipFile, name: str):
 
 
 def main() -> int:
+    args = _parse_args()
     z = _open_gtfs()
 
     print("stops ...")
@@ -173,8 +177,13 @@ def main() -> int:
         "by_date": by_date,
         "station_uic": station_uic,
     }
-    path = NETWORK_DIR / "ter_timetable.json"
-    path.write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+    path = Path(args.out) / "ter_timetable.json" if args.out else NETWORK_DIR / "ter_timetable.json"
+    # Refuse to replace a good cache with an empty or short-window build.
+    bad = timetables.problems(out, today=today, max_age_days=0)
+    if bad:
+        print("  refusing to write:", "; ".join(bad), file=sys.stderr)
+        return 1
+    timetables.write_atomic(path, out)
     size = path.stat().st_size / 1e6
     print(f"  {len(trips)} TER trips, {len(stops_out)} stops, "
           f"{len(by_date)} dates, {len(station_uic)} MAX stations joined")
@@ -223,6 +232,13 @@ def _join_stations(stops_out: dict) -> dict:
         if best and best_score >= 0.45:
             out[name] = best
     return out
+
+
+def _parse_args():
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--out", help="write here instead of src/network (used by the daily refresh)")
+    return p.parse_args()
 
 
 if __name__ == "__main__":

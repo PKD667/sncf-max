@@ -18,26 +18,27 @@ from __future__ import annotations
 import json
 from datetime import date, time
 from collections import Counter
-from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from models import Trip, Station, TripStatus
+from network import timetables
 
-_HERE = Path(__file__).resolve().parent
 
 
-@lru_cache(maxsize=1)
 def _cache() -> dict:
-    path = _HERE / "ter_timetable.json"
-    if not path.exists():
-        return {}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    return timetables.load("ter_timetable.json")
 
 
-@lru_cache(maxsize=1)
 def _uic_to_name() -> Dict[str, str]:
+    return timetables.derived("ter_timetable.json", "names", _build_uic_to_name)
+
+
+def _name_to_uic() -> Dict[str, str]:
+    return timetables.derived("ter_timetable.json", "uics", _build_name_to_uic)
+
+
+def _build_uic_to_name(c: dict) -> Dict[str, str]:
     """UIC -> display name, one name per stop, invertible by ``_name_to_uic``.
 
     A stop gets its MAX-network name when it has one, otherwise its GTFS
@@ -46,7 +47,6 @@ def _uic_to_name() -> Dict[str, str]:
     "label (UIC)" - without that, a name would silently point at one of two
     stations.
     """
-    c = _cache()
     stops = c.get("stops", {})
     prefer = {uic: name for name, uic in c.get("station_uic", {}).items()}
     taken = set(prefer.values())          # MAX names are fixed: public API uses them
@@ -62,18 +62,16 @@ def _uic_to_name() -> Dict[str, str]:
     return out
 
 
-@lru_cache(maxsize=1)
-def _name_to_uic() -> Dict[str, str]:
+def _build_name_to_uic(c: dict) -> Dict[str, str]:
     """Name -> UIC, the inverse of the display names above.
 
     Several MAX names can share one stop (Paris Gare de Lyon and Paris
     Intramuros are one UIC), so the MAX names come from station_uic as they
     are; only the names of non-MAX stops are added from ``_uic_to_name``.
     """
-    c = _cache()
     out: Dict[str, str] = dict(c.get("station_uic", {}))
     max_uics = set(out.values())
-    for uic, name in _uic_to_name().items():
+    for uic, name in _build_uic_to_name(c).items():
         if uic not in max_uics:
             out[name] = uic
     return out
@@ -81,6 +79,25 @@ def _name_to_uic() -> Dict[str, str]:
 
 def has_data() -> bool:
     return bool(_cache().get("trips"))
+
+
+def coverage(d) -> dict:
+    """Why this source should not be trusted for *d* (empty = fine).
+
+    ``built`` is the date the cache was made; ``problems`` lists stale or
+    out-of-window reasons, and ``covers`` says whether *d* has any trips.
+    """
+    from network import timetables
+    tt = _cache()
+    probs = timetables.problems(tt, today=date.today())
+    if not timetables_covers(tt, d):
+        probs.append(f"no timetable for {d.isoformat()}")
+    return {"built": tt.get("built"), "window": timetables.window(tt),
+            "problems": probs}
+
+
+def timetables_covers(tt: dict, d) -> bool:
+    return d.isoformat() in tt.get("by_date", {})
 
 
 def covers(d: date) -> bool:

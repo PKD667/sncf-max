@@ -76,7 +76,18 @@
             exec python3 ${self}/frontend/server.py "$@"
           '';
         };
-        
+
+        # Daily refresh of the TER and coach timetables (see script/).  Uses the
+        # same Python and source tree as the site, so the builders match the
+        # code that reads their output.
+        refresh-timetables = pkgs.writeShellApplication {
+          name = "refresh-timetables";
+          runtimeInputs = [ (python.withPackages (ps: pythonDeps)) ];
+          text = ''
+            exec ${self}/script/refresh_timetables.sh "$@"
+          '';
+        };
+
       in {
         # Development shell
         devShells.default = pkgs.mkShell {
@@ -105,6 +116,7 @@
           default = sncf-max;
           sncf-max = sncf-max;
           web = sncf-max-web;
+          refresh-timetables = refresh-timetables;
         };
         
         # App entry point
