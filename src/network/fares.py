@@ -247,9 +247,10 @@ def _coords_any(name: str):
     # GTFS-labelled TER halts are not in the MAX station list.
     try:
         from network import ter as _ter
-        for _uic, meta in _ter._cache().get("stops", {}).items():
-            if meta[0] == name and meta[1] is not None:
-                return (meta[1], meta[2])
+        uic = _ter._name_to_uic().get(name)
+        meta = _ter._cache().get("stops", {}).get(uic) if uic else None
+        if meta and meta[1] is not None:
+            return (meta[1], meta[2])
     except Exception:
         pass
     # Coach stops live in the bus cache under their own names.
