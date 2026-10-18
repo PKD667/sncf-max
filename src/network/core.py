@@ -59,6 +59,11 @@ class SearchResult:
     #: not an empty one: the frontend merges parts and must not read a skipped
     #: part as "no trips".
     parts: List[str] = field(default_factory=list)
+    #: Per timetable source ("ter", "bus"): its build date and any reasons it
+    #: should not be trusted for this search (stale, or not covering the date).
+    #: Empty when the source is fine.  A searched source with problems is a
+    #: warning on the page, not a silent gap.
+    coverage: dict = field(default_factory=dict)
 
     @property
     def best_free(self) -> Optional[Trip]:
@@ -120,12 +125,11 @@ def _direct_trips(client, origin_full, dest_full, trip_date,
     paid.sort()
 
     # direct TER trips (regional, paid per-km) from the GTFS timetable
-    from network import ter
+    from network import ter, bus
     if ter.has_data():
         paid = paid + ter.legs_between(origin_full, dest_full, trip_date)
 
     # direct coach trips (BlaBlaBus/FlixBus, paid per-km estimate)
-    from network import bus
     if bus.has_data():
         paid = paid + bus.legs_between(origin_full, dest_full, trip_date)
 
@@ -203,6 +207,11 @@ def search(
         result.direct_free, result.direct_paid = _direct_trips(
             client, origin_full, dest_full, trip_date,
             departure_after, arrival_before)
+        from network import ter, bus
+        for name, mod in (("ter", ter), ("bus", bus)):
+            cov = mod.coverage(trip_date)
+            if cov["problems"]:
+                result.coverage[name] = cov
 
     # -- step 2: decompose into multi-leg combos (MAX + paid fallback) -----
     if want & {"detours", "descentres"}:

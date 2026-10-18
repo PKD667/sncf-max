@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from models import Trip, Station, TripStatus
+from network import timetables
 
 _HERE = Path(__file__).resolve().parent
 
@@ -46,13 +47,8 @@ _MATCH_KM = 30.0
 _METRO_KM = 6.0
 
 
-@lru_cache(maxsize=1)
 def _cache() -> dict:
-    path = _HERE / "bus_timetable.json"
-    if not path.exists():
-        return {}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    return timetables.load("bus_timetable.json")
 
 
 def _norm(text: str) -> str:
@@ -85,9 +81,16 @@ def _train_coords(name: str) -> Optional[Tuple[float, float]]:
         return None
 
 
-@lru_cache(maxsize=4096)
 def _station_cities(station: str) -> frozenset:
-    """Bus-stop sids in the same city as a train station name."""
+    return _station_cities_for(station, timetables.stamp("bus_timetable.json"))
+
+
+@lru_cache(maxsize=4096)
+def _station_cities_for(station: str, _stamp) -> frozenset:
+    """Bus-stop sids in the same city as a train station name.
+
+    *_stamp* is the bus timetable's identity: it is part of the cache key so a
+    refresh is never answered from before it."""
     tt = _tokens(station)
     if not tt:
         return frozenset()
@@ -111,6 +114,25 @@ def _station_cities(station: str) -> frozenset:
 
 def has_data() -> bool:
     return bool(_cache().get("trips"))
+
+
+def coverage(d) -> dict:
+    """Why this source should not be trusted for *d* (empty = fine).
+
+    ``built`` is the date the cache was made; ``problems`` lists stale or
+    out-of-window reasons, and ``covers`` says whether *d* has any trips.
+    """
+    from network import timetables
+    tt = _cache()
+    probs = timetables.problems(tt, today=date.today())
+    if not timetables_covers(tt, d):
+        probs.append(f"no timetable for {d.isoformat()}")
+    return {"built": tt.get("built"), "window": timetables.window(tt),
+            "problems": probs}
+
+
+def timetables_covers(tt: dict, d) -> bool:
+    return d.isoformat() in tt.get("by_date", {})
 
 
 def covers(d: date) -> bool:

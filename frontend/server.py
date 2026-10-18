@@ -640,6 +640,7 @@ def _serialize_result(result: SearchResult) -> dict:
         "count_decomposed_paid": sum(1 for c in result.decompositions if not c.is_fully_free),
         "count_descentres": len(result.descentres),
         "parts": result.parts,
+        "coverage": result.coverage,
     }
 
 

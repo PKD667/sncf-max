@@ -24,6 +24,7 @@ button.prim{border-color:var(--b);color:var(--b)}
 .tag{display:inline-block;padding:1px 6px;font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:bold;border-radius:3px}
 .tag-m{color:var(--g);border:1px solid var(--g)}
 .tag-p{color:var(--y);border:1px solid var(--y)}
+.tag-w{color:var(--r);border:1px solid var(--r)}
 .tag-c{color:var(--c);border:1px solid var(--c)}
 .tr{display:grid;grid-template-columns:110px 55px 1fr 80px;gap:4px;padding:3px 2px;border-bottom:1px solid var(--border);font-size:10px;align-items:center;cursor:pointer}
 .tr:hover{background:var(--hover)}

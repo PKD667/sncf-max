@@ -35,6 +35,9 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from network import timetables  # noqa: E402
+
 csv.field_size_limit(10 ** 7)
 
 NETWORK_DIR = Path(__file__).resolve().parent.parent / "src" / "network"
@@ -194,6 +197,7 @@ def _build_feed(label: str, z: zipfile.ZipFile, service_dates: dict,
 
 
 def main() -> int:
+    args = _parse_args()
     today = date.today()
     trips: list = []
     by_date: dict = defaultdict(list)
@@ -219,13 +223,25 @@ def main() -> int:
         "by_date": {k: sorted(v) for k, v in by_date.items()},
         "cities": dict(cities),
     }
-    path = NETWORK_DIR / "bus_timetable.json"
-    path.write_text(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+    path = Path(args.out) / "bus_timetable.json" if args.out else NETWORK_DIR / "bus_timetable.json"
+    # Refuse to replace a good cache with an empty or short-window build.
+    bad = timetables.problems(out, today=today, max_age_days=0)
+    if bad:
+        print("  refusing to write:", "; ".join(bad), file=sys.stderr)
+        return 1
+    timetables.write_atomic(path, out)
     size = path.stat().st_size / 1e6
     print(f"  {len(trips)} bus trips, {len(stops_out)} stops, "
           f"{len(by_date)} dates, {len(cities)} cities")
     print(f"wrote {path} ({size:.1f} MB)")
     return 0
+
+
+def _parse_args():
+    import argparse
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--out", help="write here instead of src/network (used by the daily refresh)")
+    return p.parse_args()
 
 
 if __name__ == "__main__":

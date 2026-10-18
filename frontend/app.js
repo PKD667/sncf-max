@@ -234,6 +234,20 @@ function mergePart(res,name,data){
   res.destination=data.destination||res.destination;
   res.trip_date=data.trip_date||res.trip_date;
   (PART_KEYS[name]||[]).forEach(function(k){res[k]=data[k]||[]});
+  // timetable warnings (stale, or no timetable for the date): shown, not hidden
+  if(data.coverage)res.coverage=data.coverage;
+}
+
+// one line per timetable source with a problem, e.g. "TER: built 2026-09-29,
+// 38 days ago". Empty when every consulted source is fine.
+var SOURCE_NAME={ter:'TER',bus:'coach'};
+function coverageWarnings(cov){
+  if(!cov)return '';
+  return Object.keys(cov).map(function(k){
+    var c=cov[k]||{};
+    return '<span class="tag tag-w" title="'+(c.problems||[]).join('; ')+'">'+
+      (SOURCE_NAME[k]||k)+': '+(c.problems||[]).join('; ')+'</span>';
+  }).join(' ');
 }
 
 function updateStatus(){
@@ -497,7 +511,8 @@ function render(d){
     (d.descentres&&d.descentres.length?'<span class="tag tag-m">descentres: '+d.descentres.length+'</span> ':'')+
     '<span class="tag tag-m">detour: '+n_(freeDc.length,'detours')+'</span> '+
     '<span class="tag tag-p">payant: '+n_(d.direct_paid.length,'direct')+'</span> '+
-    '<span class="tag tag-p">detour payant: '+n_(paidDc.length,'detours')+'</span>';
+    '<span class="tag tag-p">detour payant: '+n_(paidDc.length,'detours')+'</span>'+
+    (d.coverage?' '+coverageWarnings(d.coverage):'');
 
   // DIRECT MAX (including descentres)
   show('directBox'); document.getElementById('fc').textContent='('+allDirect.length+')';
