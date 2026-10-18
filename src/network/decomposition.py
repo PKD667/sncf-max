@@ -66,6 +66,28 @@ def _best_per_departure(alternatives: List["CompositeTrip"]) -> List["CompositeT
     return unique
 
 
+def paid_time(c: "CompositeTrip") -> timedelta:
+    """Riding time spent on paid legs (TER, or MAX-unavailable TGV)."""
+    return sum((leg.trip.duration for leg in c.legs if not leg.is_max), timedelta())
+
+
+def drop_slower_paid(detours: List["CompositeTrip"],
+                     paid_direct: List[Trip]) -> List["CompositeTrip"]:
+    """Heuristic: a detour may not spend longer paying than the fastest paid
+    direct trip takes.
+
+    A detour that rides paid legs is only worth offering if its paid part is
+    quicker than simply buying the paid direct trip - otherwise you pay for
+    the slow way round.  The bar is the fastest paid direct on the same day.
+    Fully-MAX detours are never dropped (they cost nothing), and with no paid
+    direct to compare against nothing is dropped.
+    """
+    if not paid_direct:
+        return list(detours)
+    bar = min(t.duration for t in paid_direct)
+    return [c for c in detours if c.is_fully_max or paid_time(c) <= bar]
+
+
 @dataclass
 class CompositeTrip:
     legs: List[TripLeg]

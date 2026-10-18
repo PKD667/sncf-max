@@ -501,29 +501,27 @@ function render(d){
 
   // DIRECT MAX (including descentres)
   show('directBox'); document.getElementById('fc').textContent='('+allDirect.length+')';
-  document.getElementById('fl').innerHTML=allDirect.length?allDirect.map(function(t){
+  document.getElementById('fl').innerHTML=allDirect.length?listHTML('fl',allDirect,20,function(t){
     return trH(t,t._descentre);
-  }).join(''):'<div class=e>'+waiting(['direct','descentres'])+'</div>';
+  }):'<div class=e>'+waiting(['direct','descentres'])+'</div>';
 
   // DETOUR MAX
   if(freeDc.length||PENDING.detours){show('detourBox');
     document.getElementById('dtourc').textContent='('+n_(freeDc.length,'detours')+')';
-    document.getElementById('dl').innerHTML=freeDc.length?freeDc.slice(0,20).map(dcH).join(''):
-      '<div class=e>'+waiting(['detours'])+'</div>';
-    if(freeDc.length>20)document.getElementById('dl').innerHTML+='<div class=e>+ '+(freeDc.length-20)+' more</div>'}
+    document.getElementById('dl').innerHTML=freeDc.length?listHTML('dl',freeDc,20,dcH):
+      '<div class=e>'+waiting(['detours'])+'</div>'}
   else hide('detourBox');
 
   // PAYANT
   var paidSorted = d.direct_paid.slice().sort(function(a,b){return priceKey(a)-priceKey(b)});
   show('payantBox'); document.getElementById('pc').textContent='('+d.direct_paid.length+')';
-  document.getElementById('pl').innerHTML=paidSorted.length?paidSorted.slice(0,10).map(trH).join('')+(paidSorted.length>10?'<div class=e>+ '+(paidSorted.length-10)+' more</div>':''):'<div class=e>'+waiting(['direct'])+'</div>';
+  document.getElementById('pl').innerHTML=paidSorted.length?listHTML('pl',paidSorted,10,trH):'<div class=e>'+waiting(['direct'])+'</div>';
 
   // DETOUR PAYANT
   if(paidDc.length||PENDING.detours){show('detourPayBox');
     document.getElementById('dpc').textContent='('+n_(paidDc.length,'detours')+')';
-    document.getElementById('dpl').innerHTML=paidDc.length?paidDc.slice(0,15).map(dcH).join(''):
-      '<div class=e>'+waiting(['detours'])+'</div>';
-    if(paidDc.length>15)document.getElementById('dpl').innerHTML+='<div class=e>+ '+(paidDc.length-15)+' more</div>'}
+    document.getElementById('dpl').innerHTML=paidDc.length?listHTML('dpl',paidDc,15,dcH):
+      '<div class=e>'+waiting(['detours'])+'</div>'}
   else hide('detourPayBox');
 }
 function renderHunt(anchor,trips,dir){
@@ -536,8 +534,30 @@ function renderHunt(anchor,trips,dir){
   document.getElementById('sc').innerHTML='<span class="tag tag-m">'+trips.length+pre+disp(anchor)+'</span>';
   document.getElementById('fc').textContent='('+trips.length+')';
   var g={};trips.forEach(function(t){var k=t[key];if(!g[k])g[k]=[];g[k].push(t)});
-  var h='';for(var d in g){h+='<div style="font-weight:bold;color:var(--hi);margin-top:4px">'+disp(d)+' ('+g[d].length+')</div>';h+=g[d].slice(0,4).map(trH).join('');if(g[d].length>4)h+='<div class=e>+ '+(g[d].length-4)+' more</div>'}
+  var h='',i=0;for(var d in g){var gid='hg'+(i++);h+='<div style="font-weight:bold;color:var(--hi);margin-top:4px">'+disp(d)+' ('+g[d].length+')</div>';h+='<div id="'+gid+'">'+listHTML(gid,g[d],4,trH)+'</div>'}
   document.getElementById('fl').innerHTML=h||'<div class=e>none</div>';
+}
+
+// A list shows its first n rows; the toggle under it expands to all of them
+// and back. Lists are keyed by container id so a toggle can rebuild its own.
+var EXPANDABLE={};
+function expandHTML(id){
+  var e=EXPANDABLE[id];
+  var k=e.open?e.items.length:Math.min(e.n,e.items.length);
+  var h=e.items.slice(0,k).map(e.fn).join('');
+  if(e.items.length>e.n)h+='<div class="e more" style="cursor:pointer" onclick="toggleMore(\''+id+'\')">'+
+    (e.open?'show fewer':'show all '+e.items.length)+'</div>';
+  return h;
+}
+function listHTML(id,items,n,fn){
+  var prev=EXPANDABLE[id];
+  EXPANDABLE[id]={items:items,n:n,fn:fn,open:!!(prev&&prev.open&&prev.items.length===items.length)};
+  return expandHTML(id);
+}
+function toggleMore(id){
+  var e=EXPANDABLE[id]; if(!e)return;
+  e.open=!e.open;
+  document.getElementById(id).innerHTML=expandHTML(id);
 }
 
 function priceCell(disp_str,est,dur){var c=est?'var(--y)':'var(--g)';return '<span class=stat-d title="'+dur+' min" style="color:'+c+'">'+disp_str+'</span>'}

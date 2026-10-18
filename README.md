@@ -221,6 +221,14 @@ GET /api/search?origin=paris&destination=lyon&date=2026-10-19&parts=direct
 GET /api/cache        # cache and budget counters
 ```
 
+Detours that ride paid legs (TER, or a TGV without a MAX seat) are kept only
+while their paid time is no longer than the fastest paid direct trip on the
+same day (`drop_slower_paid`). Fully-MAX detours are never dropped. With no
+paid direct to compare against, paid detours are dropped. The rule counts
+paid riding time only, so a long free leg does not count against a detour.
+TER stop names are one-to-one with stops (`ter._uic_to_name`); three shared
+GTFS labels are shown as `label (UIC)`.
+
 ## Station Aliases
 
 Use short aliases instead of full station names:
