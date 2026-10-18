@@ -29,7 +29,7 @@ from typing import Iterable, Optional, List, Dict, Tuple
 from models import Trip, BookingResult, BookingStatus, TripStatus
 from config import SNCFConfig, default_config, get_station_name
 from network.client import SNCFMaxClient
-from network.decomposition import TripDecomposer, CompositeTrip
+from network.decomposition import TripDecomposer, CompositeTrip, drop_slower_paid
 from network.finder import FreeTripFinder
 
 # ---------------------------------------------------------------------------
@@ -110,6 +110,35 @@ class SearchResult:
 # ---------------------------------------------------------------------------
 
 
+def _direct_trips(client, origin_full, dest_full, trip_date,
+                  departure_after, arrival_before):
+    """Direct trips (MAX free, paid TGV, TER, coach) after the time filters."""
+    free, paid = client.search_all_trips(
+        origin=origin_full, destination=dest_full, trip_date=trip_date
+    )
+    free.sort()
+    paid.sort()
+
+    # direct TER trips (regional, paid per-km) from the GTFS timetable
+    from network import ter
+    if ter.has_data():
+        paid = paid + ter.legs_between(origin_full, dest_full, trip_date)
+
+    # direct coach trips (BlaBlaBus/FlixBus, paid per-km estimate)
+    from network import bus
+    if bus.has_data():
+        paid = paid + bus.legs_between(origin_full, dest_full, trip_date)
+
+    # apply time filters (intersection of both constraints)
+    if departure_after:
+        free = [t for t in free if t.departure_time >= departure_after]
+        paid = [t for t in paid if t.departure_time >= departure_after]
+    if arrival_before:
+        free = [t for t in free if t.arrival_time <= arrival_before]
+        paid = [t for t in paid if t.arrival_time <= arrival_before]
+    return free, paid
+
+
 def search(
     origin: str,
     destination: str,
@@ -171,32 +200,9 @@ def search(
 
     # -- step 1: direct trips -----------------------------------------------
     if "direct" in want:
-        free, paid = client.search_all_trips(
-            origin=origin_full, destination=dest_full, trip_date=trip_date
-        )
-        free.sort()
-        paid.sort()
-
-        # direct TER trips (regional, paid per-km) from the GTFS timetable
-        from network import ter
-        if ter.has_data():
-            paid = paid + ter.legs_between(origin_full, dest_full, trip_date)
-
-        # direct coach trips (BlaBlaBus/FlixBus, paid per-km estimate)
-        from network import bus
-        if bus.has_data():
-            paid = paid + bus.legs_between(origin_full, dest_full, trip_date)
-
-        # apply time filters (intersection of both constraints)
-        if departure_after:
-            free = [t for t in free if t.departure_time >= departure_after]
-            paid = [t for t in paid if t.departure_time >= departure_after]
-        if arrival_before:
-            free = [t for t in free if t.arrival_time <= arrival_before]
-            paid = [t for t in paid if t.arrival_time <= arrival_before]
-
-        result.direct_free = free
-        result.direct_paid = paid
+        result.direct_free, result.direct_paid = _direct_trips(
+            client, origin_full, dest_full, trip_date,
+            departure_after, arrival_before)
 
     # -- step 2: decompose into multi-leg combos (MAX + paid fallback) -----
     if want & {"detours", "descentres"}:
@@ -208,7 +214,14 @@ def search(
                 departure_after=departure_after,
                 arrival_before=arrival_before,
             )
-            result.decompositions = [c for c in all_decomp if len(c.legs) > 1]
+            # The paid-direct bar is needed even when direct was not asked for.
+            if "direct" in want:
+                bar = result.direct_paid
+            else:
+                _, bar = _direct_trips(client, origin_full, dest_full, trip_date,
+                                       departure_after, arrival_before)
+            result.decompositions = drop_slower_paid(
+                [c for c in all_decomp if len(c.legs) > 1], bar)
         if "descentres" in want:
             # book longer MAX trip, get off at target
             result.descentres = decomposer.find_descentres(
