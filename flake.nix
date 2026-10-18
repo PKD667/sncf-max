@@ -82,9 +82,11 @@
         # code that reads their output.
         refresh-timetables = pkgs.writeShellApplication {
           name = "refresh-timetables";
-          runtimeInputs = [ (python.withPackages (ps: pythonDeps)) ];
+          runtimeInputs = [ (python.withPackages (ps: pythonDeps)) pkgs.coreutils ];
+          # Run by path: the systemd unit has no bash on PATH, and `env bash`
+          # in the script would look there.
           text = ''
-            exec ${self}/script/refresh_timetables.sh "$@"
+            exec ${pkgs.bash}/bin/bash ${self}/script/refresh_timetables.sh "$@"
           '';
         };
 
