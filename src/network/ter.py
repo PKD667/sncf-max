@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, time
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -37,17 +38,45 @@ def _cache() -> dict:
 
 @lru_cache(maxsize=1)
 def _uic_to_name() -> Dict[str, str]:
-    """UIC -> display station name (tgvmax name preferred, else GTFS label)."""
+    """UIC -> display name, one name per stop, invertible by ``_name_to_uic``.
+
+    A stop gets its MAX-network name when it has one, otherwise its GTFS
+    label.  Three labels are shared by two different halts (Pouzauges,
+    Albias, Hundling Hotel de Ville), so those stops are disambiguated as
+    "label (UIC)" - without that, a name would silently point at one of two
+    stations.
+    """
     c = _cache()
-    out = {u: meta[0] for u, meta in c.get("stops", {}).items()}
-    for name, uic in c.get("station_uic", {}).items():
-        out[uic] = name  # prefer the MAX-network name where we have it
+    stops = c.get("stops", {})
+    prefer = {uic: name for name, uic in c.get("station_uic", {}).items()}
+    taken = set(prefer.values())          # MAX names are fixed: public API uses them
+    labels = Counter(meta[0] for uic, meta in stops.items() if uic not in prefer)
+    out: Dict[str, str] = {}
+    for uic, meta in stops.items():
+        if uic in prefer:
+            out[uic] = prefer[uic]
+        elif labels[meta[0]] > 1 or meta[0] in taken:
+            out[uic] = f"{meta[0]} ({uic})"
+        else:
+            out[uic] = meta[0]
     return out
 
 
 @lru_cache(maxsize=1)
 def _name_to_uic() -> Dict[str, str]:
-    return dict(_cache().get("station_uic", {}))
+    """Name -> UIC, the inverse of the display names above.
+
+    Several MAX names can share one stop (Paris Gare de Lyon and Paris
+    Intramuros are one UIC), so the MAX names come from station_uic as they
+    are; only the names of non-MAX stops are added from ``_uic_to_name``.
+    """
+    c = _cache()
+    out: Dict[str, str] = dict(c.get("station_uic", {}))
+    max_uics = set(out.values())
+    for uic, name in _uic_to_name().items():
+        if uic not in max_uics:
+            out[name] = uic
+    return out
 
 
 def has_data() -> bool:
