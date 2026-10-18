@@ -179,6 +179,48 @@ export SNCF_DEBUG=true                   # Enable debug mode
 export SNCF_HEADLESS=false               # Show browser (for debugging)
 ```
 
+### Tuning upstream behaviour
+
+```env
+SNCF_RATE=8            # requests/second to data.sncf.com, process-wide
+SNCF_BURST=8           # how many may go at once before pacing bites
+SNCF_CACHE_TTL=3600    # seconds a cached station-day stays valid
+```
+
+## How it talks to the API
+
+The public dataset answers one (origin, destination) pair per request, but a
+search needs the pair answer for every transfer station in both directions and
+the hunt needs it for every station in the country. Asking pair by pair cost
+84-221 requests per click, 40-220 seconds, and (behind a 60 s proxy) a 504.
+
+So the client asks the other way round. One request returns 100 rows of a
+*station-day* - every TGV Max record touching a station on a date - and 11
+requests return all of Paris for a day. Those rows are indexed by counterpart
+station and by train (`network/dayindex.py`), and a whole search is answered
+from two of them: one sweep out of the origin, one into the destination. The
+hunt is one sweep. Measured on a cold process:
+
+| | before | after |
+| --- | --- | --- |
+| Paris -> Lyon search | 221 requests, 51 s | 18 requests, ~7 s (3 s parallel) |
+| Bordeaux -> Lille search | 84 requests, 21 s | 6 requests, ~3 s |
+| hunt from Paris | 150 requests, 23 s | 1 sweep, 210 trips instead of 113 |
+| repeat of any of them | same cost | < 0.2 s (cached) |
+
+Answers are cached process-wide with a one-hour TTL (`network/cache.py`), and
+concurrent misses on the same key are collapsed into a single fetch. The
+request budget is a shared token bucket, so all threads together are polite
+instead of each thread sleeping a second and then racing.
+
+The site asks for a result in three parts - `direct`, `detours`, `descentres` -
+and renders each as it arrives:
+
+```
+GET /api/search?origin=paris&destination=lyon&date=2026-10-19&parts=direct
+GET /api/cache        # cache and budget counters
+```
+
 ## Station Aliases
 
 Use short aliases instead of full station names:
@@ -256,6 +298,8 @@ print(f"Arrive at {best.arrival_datetime}, wait {best.wait_time} before deadline
 ```
 sncf_max/
 ├── client.py        # Public API client (trip discovery)
+├── cache.py         # Process-wide TTL cache + shared request budget
+├── dayindex.py      # One station-day of records, indexed by partner/train
 ├── auth.py          # Authentication via browser automation
 ├── booking.py       # Booking via browser automation
 ├── voyages.py       # "Mes Voyages" integration (view/cancel trips)

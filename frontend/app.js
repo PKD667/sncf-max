@@ -31,6 +31,19 @@ function trunc(s,n){return s&&s.length>n?s.slice(0,n)+'...':(s||'')}
 function show(id){document.getElementById(id).style.display='block'}
 function hide(id){document.getElementById(id).style.display='none'}
 function loading(on,msg){document.getElementById('st').innerHTML=on?'<span class=spin></span>'+msg:''}
+function fail(err){document.getElementById('st').innerHTML=
+  '<span style="color:var(--r)">'+(err&&err.message?err.message:String(err))+'</span>'}
+// fetch JSON, or throw the server's message (a proxy error page is HTML)
+function fetchJSON(url,opts){
+  return fetch(url,opts).then(function(r){
+    return r.text().then(function(txt){
+      var data=null;try{data=JSON.parse(txt)}catch(e){}
+      if(!r.ok||data===null)throw new Error((data&&data.error)||('HTTP '+r.status+' \u2014 try again'));
+      if(data&&data.error)throw new Error(data.error);
+      return data;
+    });
+  });
+}
 function hideDetail(){hide('detail')}
 
 // init
@@ -203,25 +216,84 @@ function sncfLogout(){
 }
 
 // search
+// Three questions, three requests, fired at once: "direct" is one upstream
+// query, "detours" and "descentres" share two station-day sweeps.  Each
+// answer is rendered the moment it lands, so the page shows direct trips in
+// about a second instead of waiting for the slowest part.  A part that fails
+// says so in its own box instead of leaving a spinner and no explanation.
+var PENDING={};      // part -> true while its request is in flight
+var PART_ERR={};     // part -> error message
+var PART_KEYS={
+  direct:['direct_free','direct_paid'],
+  detours:['decompositions'],
+  descentres:['descentres']
+};
+
+function mergePart(res,name,data){
+  res.origin=data.origin||res.origin;
+  res.destination=data.destination||res.destination;
+  res.trip_date=data.trip_date||res.trip_date;
+  (PART_KEYS[name]||[]).forEach(function(k){res[k]=data[k]||[]});
+}
+
+function updateStatus(){
+  var busy=Object.keys(PENDING).filter(function(k){return PENDING[k]});
+  var errs=Object.keys(PART_ERR).map(function(k){return k+': '+PART_ERR[k]});
+  var msg=busy.map(function(k){return k+'...'}).concat(errs).join(' \u00b7 ');
+  if(missing().length){document.getElementById('st').innerHTML='<span class=spin></span>'+msg}
+  else if(errs.length){document.getElementById('st').innerHTML='<span style="color:var(--r)">'+msg+'</span>'}
+  else loading(false);
+}
+function missing(){return Object.keys(PENDING).filter(function(k){return PENDING[k]})}
+
 function search(){
   var o=document.querySelector('select[name=origin]').value;
   var d=document.querySelector('select[name=destination]').value;
-  if(!o||!d)return; loading(true,'searching...');
-  var p=new URLSearchParams({origin:o,destination:d,decompose:'1'});
-  var dv=document.querySelector('input[name=date]').value;if(dv)p.set('date',dv);
-  var da=document.querySelector('input[name=dep_after]').value;if(da)p.set('departure_after',da);
-  var ab=document.querySelector('input[name=arr_before]').value;if(ab)p.set('arrival_before',ab);
-  fetch('/api/search?'+p).then(function(r){return r.json()}).then(function(data){
-    loading(false);render(data);drawRoute(data.origin,data.destination,data.direct_free);
-  }).catch(function(){loading(false)});
+  if(!o||!d)return;
+  var dv=document.querySelector('input[name=date]').value;
+  var da=document.querySelector('input[name=dep_after]').value;
+  var ab=document.querySelector('input[name=arr_before]').value;
+  var RESULT={origin:o,destination:d,trip_date:dv||'',direct_free:[],direct_paid:[],
+              decompositions:[],descentres:[]};
+  PENDING={direct:true,detours:true,descentres:true};PART_ERR={};
+  LAST_TRIPS=[];LAST_COMPS=[];
+  render(RESULT);updateStatus();
+
+  function part(name){
+    var p=new URLSearchParams({origin:o,destination:d,parts:name});
+    if(dv)p.set('date',dv);
+    if(da)p.set('departure_after',da);
+    if(ab)p.set('arrival_before',ab);
+    return fetch('/api/search?'+p).then(function(r){
+      // never assume JSON: a proxy timeout answers with an HTML error page
+      return r.text().then(function(txt){
+        var data=null;try{data=JSON.parse(txt)}catch(e){}
+        if(!r.ok||!data||data.error)
+          throw new Error((data&&data.error)||('HTTP '+r.status));
+        return data;
+      });
+    }).then(function(data){
+      delete PENDING[name];
+      mergePart(RESULT,name,data);
+      render(RESULT);
+      if(name==='direct')drawRoute(RESULT.origin,RESULT.destination,RESULT.direct_free);
+      updateStatus();
+    }).catch(function(err){
+      delete PENDING[name];
+      PART_ERR[name]=err&&err.message?err.message:String(err);
+      render(RESULT);updateStatus();
+    });
+  }
+
+  Promise.all([part('direct'),part('detours'),part('descentres')]);
 }
 function hunt(){
   var o=document.querySelector('select[name=origin]').value;if(!o)return;
   loading(true,'hunting...');var p=new URLSearchParams({direction:'from',origin:o});
   var dv=document.querySelector('input[name=date]').value;if(dv)p.set('date',dv);
-  fetch('/api/broadcast?'+p).then(function(r){return r.json()}).then(function(trips){
+  fetchJSON('/api/broadcast?'+p).then(function(trips){
     loading(false);renderHunt(o,trips,'from');drawRoute(o,null,trips);
-  }).catch(function(){loading(false)});
+  }).catch(function(err){loading(false);fail(err)});
 }
 // reverse hunt: every free trip ARRIVING at the destination (the one feature
 // the removed /tgvmax/ site had that this one lacked: "Arriver dans une gare")
@@ -229,9 +301,9 @@ function huntArr(){
   var d=document.querySelector('select[name=destination]').value;if(!d)return;
   loading(true,'hunting arrivals...');var p=new URLSearchParams({direction:'to',destination:d});
   var dv=document.querySelector('input[name=date]').value;if(dv)p.set('date',dv);
-  fetch('/api/broadcast?'+p).then(function(r){return r.json()}).then(function(trips){
+  fetchJSON('/api/broadcast?'+p).then(function(trips){
     loading(false);renderHunt(d,trips,'to');drawRouteTo(d,trips);
-  }).catch(function(){loading(false)});
+  }).catch(function(err){loading(false);fail(err)});
 }
 
 // draw route
@@ -385,6 +457,15 @@ function artFor(t){
 }
 
 // render
+// what to say in a box whose part has not arrived (or failed)
+function waiting(parts){
+  for(var i=0;i<parts.length;i++){
+    if(PART_ERR[parts[i]])return '<span style="color:var(--r)">failed: '+PART_ERR[parts[i]]+'</span>';
+    if(PENDING[parts[i]])return '<span class=spin></span>searching...';
+  }
+  return 'none';
+}
+
 function render(d){
   show('sum');hide('descentBox'); // descentres merged into direct
   LAST_TRIPS=[];LAST_COMPS=[];
@@ -410,33 +491,38 @@ function render(d){
       booked_to: c.booked_to
     });
   });
+  function n_(v,part){return (PENDING[part]&&!v)?'\u2026':v}
   document.getElementById('sc').innerHTML=
-    '<span class="tag tag-m">direct: '+d.direct_free.length+'</span> '+
+    '<span class="tag tag-m">direct: '+n_(d.direct_free.length,'direct')+'</span> '+
     (d.descentres&&d.descentres.length?'<span class="tag tag-m">descentres: '+d.descentres.length+'</span> ':'')+
-    '<span class="tag tag-m">detour: '+freeDc.length+'</span> '+
-    '<span class="tag tag-p">payant: '+d.direct_paid.length+'</span> '+
-    '<span class="tag tag-p">detour payant: '+paidDc.length+'</span>';
+    '<span class="tag tag-m">detour: '+n_(freeDc.length,'detours')+'</span> '+
+    '<span class="tag tag-p">payant: '+n_(d.direct_paid.length,'direct')+'</span> '+
+    '<span class="tag tag-p">detour payant: '+n_(paidDc.length,'detours')+'</span>';
 
   // DIRECT MAX (including descentres)
   show('directBox'); document.getElementById('fc').textContent='('+allDirect.length+')';
   document.getElementById('fl').innerHTML=allDirect.length?allDirect.map(function(t){
     return trH(t,t._descentre);
-  }).join(''):'<div class=e>none</div>';
+  }).join(''):'<div class=e>'+waiting(['direct','descentres'])+'</div>';
 
   // DETOUR MAX
-  if(freeDc.length){show('detourBox');document.getElementById('dtourc').textContent='('+freeDc.length+')';
-    document.getElementById('dl').innerHTML=freeDc.slice(0,20).map(dcH).join('');
+  if(freeDc.length||PENDING.detours){show('detourBox');
+    document.getElementById('dtourc').textContent='('+n_(freeDc.length,'detours')+')';
+    document.getElementById('dl').innerHTML=freeDc.length?freeDc.slice(0,20).map(dcH).join(''):
+      '<div class=e>'+waiting(['detours'])+'</div>';
     if(freeDc.length>20)document.getElementById('dl').innerHTML+='<div class=e>+ '+(freeDc.length-20)+' more</div>'}
   else hide('detourBox');
 
   // PAYANT
   var paidSorted = d.direct_paid.slice().sort(function(a,b){return priceKey(a)-priceKey(b)});
   show('payantBox'); document.getElementById('pc').textContent='('+d.direct_paid.length+')';
-  document.getElementById('pl').innerHTML=paidSorted.length?paidSorted.slice(0,10).map(trH).join('')+(paidSorted.length>10?'<div class=e>+ '+(paidSorted.length-10)+' more</div>':''):'<div class=e>none</div>';
+  document.getElementById('pl').innerHTML=paidSorted.length?paidSorted.slice(0,10).map(trH).join('')+(paidSorted.length>10?'<div class=e>+ '+(paidSorted.length-10)+' more</div>':''):'<div class=e>'+waiting(['direct'])+'</div>';
 
   // DETOUR PAYANT
-  if(paidDc.length){show('detourPayBox');document.getElementById('dpc').textContent='('+paidDc.length+')';
-    document.getElementById('dpl').innerHTML=paidDc.slice(0,15).map(dcH).join('');
+  if(paidDc.length||PENDING.detours){show('detourPayBox');
+    document.getElementById('dpc').textContent='('+n_(paidDc.length,'detours')+')';
+    document.getElementById('dpl').innerHTML=paidDc.length?paidDc.slice(0,15).map(dcH).join(''):
+      '<div class=e>'+waiting(['detours'])+'</div>';
     if(paidDc.length>15)document.getElementById('dpl').innerHTML+='<div class=e>+ '+(paidDc.length-15)+' more</div>'}
   else hide('detourPayBox');
 }

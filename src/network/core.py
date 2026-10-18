@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from typing import Optional, List, Dict, Tuple
+from typing import Iterable, Optional, List, Dict, Tuple
 
 from models import Trip, BookingResult, BookingStatus, TripStatus
 from config import SNCFConfig, default_config, get_station_name
@@ -35,6 +35,13 @@ from network.finder import FreeTripFinder
 # ---------------------------------------------------------------------------
 # Result container
 # ---------------------------------------------------------------------------
+
+
+#: The three questions a search answers, each worth its own round trip so the
+#: frontend can show a result the moment it has one instead of waiting for the
+#: slowest.  ``direct`` is one request; ``detours`` and ``descentres`` share
+#: two station-day sweeps between them.
+PARTS = ("direct", "detours", "descentres")
 
 
 @dataclass
@@ -48,6 +55,10 @@ class SearchResult:
     direct_paid: List[Trip] = field(default_factory=list)
     decompositions: List[CompositeTrip] = field(default_factory=list)
     descentres: List[CompositeTrip] = field(default_factory=list)  # book longer, get off early
+    #: Which of :data:`PARTS` this result actually holds.  A partial result is
+    #: not an empty one: the frontend merges parts and must not read a skipped
+    #: part as "no trips".
+    parts: List[str] = field(default_factory=list)
 
     @property
     def best_free(self) -> Optional[Trip]:
@@ -108,6 +119,7 @@ def search(
     departure_after: Optional[time] = None,
     arrival_before: Optional[time] = None,
     config: Optional[SNCFConfig] = None,
+    parts: Optional[Iterable[str]] = None,
 ) -> SearchResult:
     """Core search algorithm: find free TGV Max trips for a route.
 
@@ -117,6 +129,10 @@ def search(
         trip_date: Date of travel. Defaults to tomorrow.
         decompose: Whether to search for multi-leg all-MAX combos.
         config: Optional SNCFConfig.
+        parts: Which of ``direct``, ``detours``, ``descentres`` to compute.
+            ``None`` means all of them.  Omitted parts come back empty and are
+            named in ``SearchResult.parts``, so a caller can merge two partial
+            results without treating "not asked" as "nothing found".
 
     Returns:
         SearchResult with direct_free, direct_paid, decompositions.
@@ -134,58 +150,71 @@ def search(
     if trip_date is None:
         trip_date = date.today() + timedelta(days=1)
 
+    requested = tuple(PARTS) if parts is None else tuple(parts)
+    unknown = set(requested) - set(PARTS)
+    if unknown:
+        raise ValueError(f"unknown search parts: {sorted(unknown)}")
+    want = set(requested)
+    if not decompose:
+        want &= {"direct"}
+
     client = SNCFMaxClient(config=cfg)
     origin_full = get_station_name(origin)
     dest_full = get_station_name(destination)
-
-    # -- step 1: direct trips -----------------------------------------------
-    free, paid = client.search_all_trips(
-        origin=origin_full, destination=dest_full, trip_date=trip_date
-    )
-    free.sort()
-    paid.sort()
-
-    # direct TER trips (regional, paid per-km) from the GTFS timetable
-    from network import ter
-    if ter.has_data():
-        paid = paid + ter.legs_between(origin_full, dest_full, trip_date)
-
-    # direct coach trips (BlaBlaBus/FlixBus, paid per-km estimate)
-    from network import bus
-    if bus.has_data():
-        paid = paid + bus.legs_between(origin_full, dest_full, trip_date)
-
-    # apply time filters (intersection of both constraints)
-    if departure_after:
-        free = [t for t in free if t.departure_time >= departure_after]
-        paid = [t for t in paid if t.departure_time >= departure_after]
-    if arrival_before:
-        free = [t for t in free if t.arrival_time <= arrival_before]
-        paid = [t for t in paid if t.arrival_time <= arrival_before]
 
     result = SearchResult(
         origin=origin_full,
         destination=dest_full,
         trip_date=trip_date,
-        direct_free=free,
-        direct_paid=paid,
+        parts=sorted(want),
     )
 
+    # -- step 1: direct trips -----------------------------------------------
+    if "direct" in want:
+        free, paid = client.search_all_trips(
+            origin=origin_full, destination=dest_full, trip_date=trip_date
+        )
+        free.sort()
+        paid.sort()
+
+        # direct TER trips (regional, paid per-km) from the GTFS timetable
+        from network import ter
+        if ter.has_data():
+            paid = paid + ter.legs_between(origin_full, dest_full, trip_date)
+
+        # direct coach trips (BlaBlaBus/FlixBus, paid per-km estimate)
+        from network import bus
+        if bus.has_data():
+            paid = paid + bus.legs_between(origin_full, dest_full, trip_date)
+
+        # apply time filters (intersection of both constraints)
+        if departure_after:
+            free = [t for t in free if t.departure_time >= departure_after]
+            paid = [t for t in paid if t.departure_time >= departure_after]
+        if arrival_before:
+            free = [t for t in free if t.arrival_time <= arrival_before]
+            paid = [t for t in paid if t.arrival_time <= arrival_before]
+
+        result.direct_free = free
+        result.direct_paid = paid
+
     # -- step 2: decompose into multi-leg combos (MAX + paid fallback) -----
-    if decompose:
+    if want & {"detours", "descentres"}:
         decomposer = TripDecomposer(config=cfg)
-        all_decomp = decomposer.find_alternatives(
-            origin=origin_full, destination=dest_full, trip_date=trip_date,
-            include_paid=True,
-            departure_after=departure_after,
-            arrival_before=arrival_before,
-        )
-        result.decompositions = [c for c in all_decomp if len(c.legs) > 1]
-        # also find "descentres" — book longer MAX trip, get off at target
-        result.descentres = decomposer.find_descentres(
-            origin=origin_full, target=dest_full, trip_date=trip_date,
-            departure_after=departure_after, arrival_before=arrival_before,
-        )
+        if "detours" in want:
+            all_decomp = decomposer.find_alternatives(
+                origin=origin_full, destination=dest_full, trip_date=trip_date,
+                include_paid=True,
+                departure_after=departure_after,
+                arrival_before=arrival_before,
+            )
+            result.decompositions = [c for c in all_decomp if len(c.legs) > 1]
+        if "descentres" in want:
+            # book longer MAX trip, get off at target
+            result.descentres = decomposer.find_descentres(
+                origin=origin_full, target=dest_full, trip_date=trip_date,
+                departure_after=departure_after, arrival_before=arrival_before,
+            )
 
     return result
 

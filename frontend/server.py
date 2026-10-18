@@ -163,46 +163,44 @@ def api_stations():
 
 @app.route("/api/train_stops")
 def api_train_stops():
-    """Return all stops for a given train on a date."""
+    """Return all stops for a given train on a date, in travel order."""
     train_no = request.args.get("train", "")
     date_str = request.args.get("date", "")
     if not train_no:
         return jsonify({"error": "missing train param"}), 400
-
-    from network.client import SNCFMaxClient
-    client = SNCFMaxClient()
 
     trip_date = None
     if date_str:
         try:
             trip_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
-            pass
+            return jsonify({"error": "bad date format (use YYYY-MM-DD)"}), 400
+    if trip_date is None:
+        trip_date = date.today()
 
-    response = client.get_trips_raw(
-        trip_date=trip_date, only_available=False, limit=200,
-        train_no=train_no,
-    )
-
-    stops: dict = {}
-    for r in response.get("results", []):
-        o = r.get("origine", "")
-        d = r.get("destination", "")
-        dep = r.get("heure_depart", "")
-        arr = r.get("heure_arrivee", "")
-        if o and dep:
-            stops[o] = {"station": o, "time": dep, "type": "departure"}
-        if d and arr:
-            stops[d] = {"station": d, "time": arr, "type": "arrival"}
-
-    # sort by time
-    sorted_stops = sorted(stops.values(), key=lambda s: s["time"])
+    from network.client import SNCFMaxClient
+    try:
+        stops = SNCFMaxClient().train_stops(train_no, trip_date)
+    except Exception as exc:
+        app.logger.exception("train_stops failed")
+        return jsonify({"error": f"upstream lookup failed: {type(exc).__name__}: {exc}"}), 502
 
     return jsonify({
         "train_no": train_no,
-        "date": date_str,
-        "stops": sorted_stops,
+        "date": trip_date.isoformat(),
+        "stops": [
+            {"station": station, "time": hhmm,
+             "type": "arrival" if i == len(stops) - 1 else "departure"}
+            for i, (station, hhmm) in enumerate(stops)
+        ],
     })
+
+
+@app.route("/api/cache")
+def api_cache():
+    """Cache and request-budget counters, for watching a deploy."""
+    from network.client import cache_stats
+    return jsonify(cache_stats())
 
 
 @app.route("/api/search")
@@ -213,6 +211,10 @@ def api_search():
                   decompose (optional, default 1)
                   departure_after (optional, HH:MM)
                   arrival_before (optional, HH:MM)
+                  parts (optional: direct,detours,descentres - default all)
+                  A caller asking for one part gets that part back as soon as
+                  it is known, so the page can render it without waiting for
+                  the others; `parts` in the reply says what it holds.
     """
     origin = request.args.get("origin", "paris")
     destination = request.args.get("destination", "lyon")
@@ -220,6 +222,14 @@ def api_search():
     decompose = request.args.get("decompose", "1") == "1"
     dep_after = request.args.get("departure_after", "")
     arr_before = request.args.get("arrival_before", "")
+    parts_arg = request.args.get("parts", "").strip()
+    parts = [x.strip() for x in parts_arg.split(",") if x.strip()] or None
+    if parts:
+        from network.core import PARTS
+        unknown = [p for p in parts if p not in PARTS]
+        if unknown:
+            return jsonify({"error": f"unknown parts: {unknown}; "
+                                     f"known: {list(PARTS)}"}), 400
 
     trip_date: Optional[date] = None
     if date_str:
@@ -242,14 +252,19 @@ def api_search():
         except ValueError:
             pass
 
-    result = search(
-        origin=origin,
-        destination=destination,
-        trip_date=trip_date,
-        decompose=decompose,
-        departure_after=dep_after_t,
-        arrival_before=arr_before_t,
-    )
+    try:
+        result = search(
+            origin=origin,
+            destination=destination,
+            trip_date=trip_date,
+            decompose=decompose,
+            departure_after=dep_after_t,
+            arrival_before=arr_before_t,
+            parts=parts,
+        )
+    except Exception as exc:  # upstream failure: say so, with the reason
+        app.logger.exception("search failed: %s -> %s", origin, destination)
+        return jsonify({"error": f"upstream search failed: {type(exc).__name__}: {exc}"}), 502
     return jsonify(_serialize_result(result))
 
 
@@ -271,14 +286,18 @@ def api_broadcast():
         except ValueError:
             return jsonify({"error": "bad date format (use YYYY-MM-DD)"}), 400
 
-    if direction == "to":
-        destination = request.args.get("destination", "")
-        if not destination:
-            return jsonify({"error": "destination required for direction=to"}), 400
-        trips = broadcast_to(destination=destination, trip_date=trip_date)
-    else:
-        origin = request.args.get("origin", "paris")
-        trips = broadcast(origin=origin, trip_date=trip_date)
+    try:
+        if direction == "to":
+            destination = request.args.get("destination", "")
+            if not destination:
+                return jsonify({"error": "destination required for direction=to"}), 400
+            trips = broadcast_to(destination=destination, trip_date=trip_date)
+        else:
+            origin = request.args.get("origin", "paris")
+            trips = broadcast(origin=origin, trip_date=trip_date)
+    except Exception as exc:
+        app.logger.exception("broadcast failed")
+        return jsonify({"error": f"upstream hunt failed: {type(exc).__name__}: {exc}"}), 502
     return jsonify([_trip_to_dict(t) for t in trips])
 
 
@@ -620,6 +639,7 @@ def _serialize_result(result: SearchResult) -> dict:
         "count_decomposed_free": sum(1 for c in result.decompositions if c.is_fully_free),
         "count_decomposed_paid": sum(1 for c in result.decompositions if not c.is_fully_free),
         "count_descentres": len(result.descentres),
+        "parts": result.parts,
     }
 
 
