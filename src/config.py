@@ -110,8 +110,24 @@ class SNCFConfig:
     CONFIG_DIR: Path = field(default_factory=lambda: Path.home() / ".config" / "sncf-max")
     
     # Rate limiting
-    REQUEST_DELAY: float = 1.0  # seconds between requests
+    # The budget is per process, not per client object: every thread and every
+    # request shares it (see network.cache.TokenBucket).  Eight requests per
+    # second against a public dataset, with a burst of eight, is both leaner
+    # and faster than the old per-object `while elapsed < 1: sleep()` that
+    # every worker thread raced through.
+    REQUEST_RATE: float = 8.0        # requests per second, process-wide
+    REQUEST_BURST: int = 8           # allowed at once before pacing bites
+    REQUEST_DELAY: float = 0.0       # kept for callers that set it; unused now
     MAX_RETRIES: int = 3
+
+    # Caching
+    # Seat availability moves as tickets sell, so the station-day cache is
+    # short-lived: an hour keeps a busy afternoon on one fetch per station
+    # while never showing a stale sold-out train as free.
+    CACHE_TTL: float = 3600.0        # seconds a cached station-day stays valid
+    DAILY_CACHE_SIZE: int = 64       # station-days kept in memory
+    PAGE_SIZE: int = 100             # rows per request (the API's maximum)
+    PAGE_WORKERS: int = 4            # pages fetched at once within one sweep
     
     # TGV Max limits
     MAX_BOOKINGS: int = 6  # Maximum concurrent TGV Max bookings
@@ -131,6 +147,9 @@ class SNCFConfig:
             DEBUG=os.getenv("SNCF_DEBUG", "false").lower() == "true",
             PROXY=os.getenv("SNCF_PROXY") or os.getenv("HTTP_PROXY"),
             PROXY_BROWSER=os.getenv("SNCF_PROXY_BROWSER"),
+            REQUEST_RATE=float(os.getenv("SNCF_RATE", cls.REQUEST_RATE)),
+            REQUEST_BURST=int(os.getenv("SNCF_BURST", cls.REQUEST_BURST)),
+            CACHE_TTL=float(os.getenv("SNCF_CACHE_TTL", cls.CACHE_TTL)),
         )
     
     def get_proxy_dict(self) -> Optional[dict]:

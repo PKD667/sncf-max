@@ -233,8 +233,14 @@ REGISTRY: List[FareProvider] = [
 ]
 
 
+@lru_cache(maxsize=4096)
 def _coords_any(name: str):
-    """Coordinates for a MAX station, TER halt or coach stop name."""
+    """Coordinates for a MAX station, TER halt or coach stop name.
+
+    Memoised because the fallbacks below scan every TER halt and every coach
+    stop in turn: without the cache, pricing a 160-trip result spent ~37 s of
+    CPU re-reading the same two files for the same handful of names.
+    """
     c = stn.coords(name)
     if c:
         return c
@@ -272,8 +278,14 @@ def _coords_km(origin: str, destination: str) -> Optional[float]:
     return 2 * r * math.asin(math.sqrt(h))
 
 
+@lru_cache(maxsize=8192)
 def estimate_fare(origin: str, destination: str, carrier: str = "TGV") -> Fare:
-    """Best available fare for a leg: exact tariff if known, else per-km."""
+    """Best available fare for a leg: exact tariff if known, else per-km.
+
+    A pure function of its arguments over static timetable data, so it is
+    memoised: a search asks for the same few OD pairs hundreds of times (once
+    per trip, per leg, per composite) and each miss cost ~110 ms.
+    """
     for provider in REGISTRY:
         f = provider.fare(origin, destination, carrier)
         if f is not None:

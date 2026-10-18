@@ -13,7 +13,6 @@ All calls are *parallel* across destinations for speed.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Optional, List, Dict, Set, Tuple
@@ -22,52 +21,14 @@ import logging
 from models import Trip
 from config import SNCFConfig, default_config, get_station_name
 from network.client import SNCFMaxClient
+from network.dayindex import SIDE_FROM, SIDE_TO
 
 logger = logging.getLogger(__name__)
 
-# -- TGV stations to scan — loaded from the real network graph --
-_SCAN_STATIONS: Optional[List[str]] = None
-
-
-def _get_scan_stations() -> List[str]:
-    global _SCAN_STATIONS
-    if _SCAN_STATIONS is None:
-        from network.stations import all_stations
-        # The full set of real API station names (already canonical).
-        _SCAN_STATIONS = list(all_stations())
-    return _SCAN_STATIONS
-
-
-# Hunt scan priority: international destinations and the big hubs first.
-# The station list is alphabetical, so a naive [:max_routes] slice only
-# ever reaches A..Bp - Lyon, Marseille and every international station
-# silently never got hunted. Unknown names are skipped (guarded below),
-# so this list can mention stations freely.
-_PRIORITY_FIRST = [
-    # International (TGV Max dataset coverage varies: Luxembourg and
-    # Belgium have free seats; Switzerland/Germany/Spain mostly paid).
-    "BRUXELLES MIDI", "LUXEMBOURG", "GENEVE CORNAVIN", "BASEL SBB",
-    "ZURICH HB", "FRANKFURT AM MAIN HBF", "FRANKFURT (MAIN) SUD",
-    "STUTTGART HBF", "MUNCHEN HBF", "FREIBURG (BREISGAU) HBF",
-    "KARLSRUHE HBF", "TORINO PORTA SUSA", "MILANO PORTA GARIBALDI",
-    "BARCELONA SANTS",
-    # Big domestic hubs.
-    "PARIS (intramuros)", "LYON (intramuros)", "MARSEILLE ST CHARLES",
-    "BORDEAUX ST JEAN", "LILLE (intramuros)", "NANTES", "STRASBOURG",
-    "RENNES", "TOULOUSE MATABIAU", "MONTPELLIER SAINT ROCH",
-    "NICE VILLE", "DIJON VILLE", "ANGERS ST LAUD", "TOURS", "LE MANS",
-    "AVIGNON TGV", "AIX EN PROVENCE TGV", "MARNE LA VALLEE CHESSY",
-    "AEROPORT ROISSY CDG 2 TGV", "MASSY TGV", "LYON PART DIEU",
-    "LILLE FLANDRES", "VALENCE TGV AUVERGNE RHONE ALPES",
-]
-
-
-def _scan_order(fixed: str, max_routes: int) -> List[str]:
-    """Hunt scan list: priority stations first, then alphabetical rest."""
-    pool = {s for s in _get_scan_stations() if s.upper() != fixed.upper()}
-    prio = [s for s in _PRIORITY_FIRST if s in pool]
-    rest = sorted(pool - set(prio))
-    return (prio + rest)[:max_routes]
+# Destinations are no longer picked in advance: one sweep of the station's
+# day returns every free trip from it, so the old "scan the first 150 stations
+# in priority order" list (and the cap that silently hid half the country) is
+# gone.  Callers may still pass an explicit ``destinations`` list to filter.
 
 
 @dataclass
@@ -113,7 +74,7 @@ class FinderReport:
 
 
 class FreeTripFinder:
-    """Hunt unusual TGV Max (free) trips using parallel destination scans."""
+    """Hunt unusual TGV Max (free) trips, from station-day sweeps."""
 
     def __init__(self, config: Optional[SNCFConfig] = None, max_workers: int = 8):
         self.config = config or default_config
@@ -131,15 +92,20 @@ class FreeTripFinder:
         destinations: Optional[List[str]] = None,
         max_routes: int = 150,
     ) -> FinderReport:
-        """Parallel broadcast: find every free trip from *origin*."""
+        """Find every free trip leaving *origin* that day.
+
+        One sweep of the station's day answers all of it: no cap on
+        destinations, no per-destination request.  ``destinations`` filters
+        the result if given.
+        """
         if trip_date is None:
             trip_date = date.today() + timedelta(days=1)
         origin_full = get_station_name(origin)
 
+        index = self._client.day(origin_full, SIDE_FROM, trip_date)
         if destinations is None:
-            destinations = _scan_order(origin_full, max_routes)
+            destinations = index.counterparts()
 
-        # parallel fetch
         free_dict, _paid_dict = self._client.search_all_to_destinations_split(
             origin=origin_full,
             destinations=destinations,
@@ -179,19 +145,19 @@ class FreeTripFinder:
         origins: Optional[List[str]] = None,
         max_routes: int = 150,
     ) -> FinderReport:
-        """Parallel reverse broadcast: find every free trip TO *destination*.
+        """Find every free trip arriving at *destination* that day.
 
-        This is the 'who can get here for free today?' query - the mirror of
-        find_all_from, scanning every origin in parallel.
+        The 'who can get here for free today?' query - the mirror of
+        ``find_all_from``, from one sweep into the destination.
         """
         if trip_date is None:
             trip_date = date.today() + timedelta(days=1)
         destination_full = get_station_name(destination)
 
+        index = self._client.day(destination_full, SIDE_TO, trip_date)
         if origins is None:
-            origins = _scan_order(destination_full, max_routes)
+            origins = index.counterparts()
 
-        # parallel fetch
         free_dict, _paid_dict = self._client.search_all_from_origins_split(
             destination=destination_full,
             origins=origins,
@@ -287,52 +253,36 @@ class FreeTripFinder:
         trip_date: date,
         intermediate_stations: Optional[List[str]] = None,
     ) -> List[Tuple[Trip, Trip]]:
-        """2-leg journeys where BOTH legs are MAX — parallel fetch per station."""
-        from network.graph import resolve, neighbors
+        """2-leg journeys where BOTH legs are MAX.
 
+        Leg 1 (origin->via) and leg 2 (via->destination) are both answered by
+        the same two sweeps a detour search uses, so the whole country's
+        intermediates cost nothing beyond those sweeps.
+        """
         origin_full = get_station_name(origin)
         dest_full = get_station_name(destination)
+        o_index = self._client.day(origin_full, SIDE_FROM, trip_date)
+        d_index = self._client.day(dest_full, SIDE_TO, trip_date)
 
         if intermediate_stations is None:
-            o_node = resolve(origin_full)
-            if o_node:
-                intermediates = [s for s in neighbors(o_node) if s != o_node]
-            else:
-                intermediates = [s for s in _get_scan_stations() if s != origin_full and s != dest_full][:40]
+            intermediate_stations = o_index.counterparts()
 
-        # parallel: fetch leg1 + leg2 for each intermediate
         combos: List[Tuple[Trip, Trip]] = []
         seen: Set[str] = set()
-
-        def _fetch_combo(inter: str) -> List[Tuple[Trip, Trip]]:
-            try:
-                free1, _ = self._client.search_all_trips(
-                    origin=origin_full, destination=inter, trip_date=trip_date)
-                free2, _ = self._client.search_all_trips(
-                    origin=inter, destination=dest_full, trip_date=trip_date)
-                result: List[Tuple[Trip, Trip]] = []
-                for t1 in free1:
-                    if not t1.is_free:
-                        continue
-                    for t2 in free2:
-                        if not t2.is_free:
-                            continue
-                        arr = t1.arrival_datetime
-                        dep = t2.departure_datetime
-                        if arr < dep and 15 * 60 <= (dep - arr).total_seconds() <= 120 * 60:
-                            result.append((t1, t2))
-                return result
-            except Exception:
-                return []
-
-        with ThreadPoolExecutor(max_workers=self._workers) as ex:
-            futures = {ex.submit(_fetch_combo, s): s for s in intermediates}
-            for future in as_completed(futures):
-                for t1, t2 in future.result():
-                    key = f"{t1.trip_key}|{t2.trip_key}"
-                    if key not in seen:
-                        seen.add(key)
-                        combos.append((t1, t2))
+        for via in intermediate_stations:
+            if via in (origin_full, dest_full):
+                continue
+            free1, _ = self._client._split_rows(o_index.rows_to(via))
+            free2, _ = self._client._split_rows(d_index.rows_to(via))
+            for t1 in free1:
+                for t2 in free2:
+                    arr = t1.arrival_datetime
+                    dep = t2.departure_datetime
+                    if arr < dep and 15 * 60 <= (dep - arr).total_seconds() <= 120 * 60:
+                        key = f"{t1.trip_key}|{t2.trip_key}"
+                        if key not in seen:
+                            seen.add(key)
+                            combos.append((t1, t2))
 
         combos.sort(key=lambda x: (
             datetime.combine(trip_date, x[0].departure_time),

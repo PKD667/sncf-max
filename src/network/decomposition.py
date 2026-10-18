@@ -18,7 +18,9 @@ import logging
 
 from models import Trip, Station
 from config import SNCFConfig, default_config, get_station_name
+from network.cache import TTLCache
 from network.client import SNCFMaxClient
+from network.dayindex import DayIndex, SIDE_FROM, SIDE_TO, normalise
 from network import stations as stn
 
 logger = logging.getLogger(__name__)
@@ -26,19 +28,42 @@ logger = logging.getLogger(__name__)
 MIN_CONNECTION = 15
 MAX_CONNECTION = 120
 
-
-def _sort_key(hhmm: str) -> str:
-    """Order stops by clock time, pushing after-midnight times to the end so a
-    train running e.g. 22:50 -> 00:40 keeps its real stop order."""
-    if not hhmm:
-        return "z"
-    return ("1" + hhmm) if hhmm < "04:00" else ("0" + hhmm)
+# Pair answers shared by every decomposer in the process, because every
+# frontend request builds its own.  Keyed by (origin, destination, date,
+# only_max); wiped by ``clear_cache``.
+_PAIR_CACHE = TTLCache(ttl=default_config.CACHE_TTL, maxsize=2048)
 
 
 @dataclass
 class TripLeg:
     trip: Trip
     is_max: bool
+
+
+def _best_per_departure(alternatives: List["CompositeTrip"]) -> List["CompositeTrip"]:
+    """One journey per (departure, arrival, MAX legs), in a total order.
+
+    ``score`` alone ties often - two intermediate stations giving the same
+    departure, the same arrival and the same leg counts score the same - and
+    the eval loop collects its workers in completion order, so a tie used to
+    be broken by whichever thread finished first: the same search could swap
+    one detour for another between runs.  Sorting on a total key (score, then
+    clock times, then the trains themselves) makes the answer reproducible
+    without changing which journeys are considered.
+    """
+    def _order(c: "CompositeTrip"):
+        return (c.score, c.departure_time, c.arrival_time,
+                tuple((leg.trip.train_number, leg.trip.departure_time)
+                      for leg in c.legs))
+
+    seen: Set[Tuple[time, time, int]] = set()
+    unique: List["CompositeTrip"] = []
+    for alt in sorted(alternatives, key=_order):
+        key = (alt.departure_time, alt.arrival_time, alt.max_legs)
+        if key not in seen:
+            seen.add(key)
+            unique.append(alt)
+    return unique
 
 
 @dataclass
@@ -193,34 +218,21 @@ class TripDecomposer:
         self.config = config or default_config
         self._client = SNCFMaxClient(config=self.config)
         self._workers = max_workers
-        self._cache: Dict[str, List[Trip]] = {}
-        self._stops_cache: Dict[str, List[Tuple[str, str]]] = {}
 
-    def _cache_key(self, origin: str, destination: str, date: date, only_max: bool) -> str:
-        return f"{origin}|{destination}|{date}|{only_max}"
-
-    def _ordered_stops(self, train_no: str, trip_date: date) -> List[Tuple[str, str]]:
+    def _ordered_stops(self, train_no: str, trip_date: date,
+                       sweeps: Optional[List[DayIndex]] = None) -> List[Tuple[str, str]]:
         """A train's stops on a date as (station, HH:MM), in travel order.
 
-        Reconstructed from all the train's (origine, destination) records,
+        Reconstructed from the train's (origine, destination) records and
         ordered by time — the exact, stop-wise truth used to decide where you
-        can get on and off, and when.  Cached.
+        can get on and off, and when.  A station-day sweep already holds every
+        stop the train makes after the station it was swept from, so prefer it;
+        otherwise ask for the train itself (one cached request per train-day).
         """
-        key = f"{train_no}|{trip_date}"
-        if key not in self._stops_cache:
-            resp = self._client.get_trips_raw(
-                trip_date=trip_date, only_available=False, limit=100, train_no=train_no)
-            first_seen: Dict[str, str] = {}
-            for record in resp.get("results", []):
-                for station_key, time_key in (("origine", "heure_depart"),
-                                              ("destination", "heure_arrivee")):
-                    s = record.get(station_key)
-                    hhmm = record.get(time_key) or ""
-                    if s and (s not in first_seen or _sort_key(hhmm) < _sort_key(first_seen[s])):
-                        first_seen[s] = hhmm
-            self._stops_cache[key] = sorted(
-                first_seen.items(), key=lambda kv: _sort_key(kv[1]))
-        return self._stops_cache[key]
+        for index in sweeps or ():
+            if index.has_train(train_no):
+                return index.stops(train_no)
+        return self._client.train_stops(train_no, trip_date)
 
     @staticmethod
     def _pos(stops: List[Tuple[str, str]], name: str) -> int:
@@ -231,7 +243,8 @@ class TripDecomposer:
                 return i
         return -1
 
-    def _passes_through(self, trip: Trip, target: str, trip_date: date) -> bool:
+    def _passes_through(self, trip: Trip, target: str, trip_date: date,
+                        sweeps: Optional[List[DayIndex]] = None) -> bool:
         """Does *trip*'s train reach *target* strictly between where you board
         (its origin) and where your ticket ends (its destination)?
 
@@ -241,15 +254,16 @@ class TripDecomposer:
         sits *after* the booked destination — e.g. Marseille on a Lyon->Valence
         trip — fails, because you can't ride past your ticket.
         """
-        stops = self._ordered_stops(trip.train_number, trip_date)
+        stops = self._ordered_stops(trip.train_number, trip_date, sweeps)
         o = self._pos(stops, str(trip.origin))
         x = self._pos(stops, str(trip.destination))
         t = self._pos(stops, target)
         return o >= 0 and x >= 0 and t >= 0 and o < t < x
 
-    def _arrival_at(self, trip: Trip, target: str, trip_date: date) -> Optional[time]:
+    def _arrival_at(self, trip: Trip, target: str, trip_date: date,
+                    sweeps: Optional[List[DayIndex]] = None) -> Optional[time]:
         """Clock time the train reaches *target* (for descentre filtering)."""
-        stops = self._ordered_stops(trip.train_number, trip_date)
+        stops = self._ordered_stops(trip.train_number, trip_date, sweeps)
         i = self._pos(stops, target)
         if i < 0 or not stops[i][1]:
             return None
@@ -258,20 +272,47 @@ class TripDecomposer:
         except ValueError:
             return None
 
+    @staticmethod
+    def _rows_from_sweeps(sweeps: Optional[List[DayIndex]], origin: str,
+                          destination: str) -> Optional[List[dict]]:
+        """Rows for (origin, destination) from a sweep, or None if uncovered."""
+        for index in sweeps or ():
+            if index.side == SIDE_FROM and normalise(index.station) == normalise(origin):
+                return index.rows_to(destination)
+            if index.side == SIDE_TO and normalise(index.station) == normalise(destination):
+                return index.rows_to(origin)
+        return None
+
     def _fetch(self, origin: str, destination: str, trip_date: date,
-               only_max: bool = True) -> List[Trip]:
-        key = self._cache_key(origin, destination, trip_date, only_max)
-        if key not in self._cache:
-            free, paid = self._client.search_all_trips(
-                origin=origin, destination=destination, trip_date=trip_date)
-            trips = free if only_max else free + paid
+               only_max: bool = True,
+               sweeps: Optional[List[DayIndex]] = None) -> List[Trip]:
+        """Free (or free+paid) trips for one pair, cached process-wide.
+
+        With a sweep covering the pair this is a dictionary lookup — no
+        request at all.  Without one it is a single request for the pair,
+        which is the right price for the direct search and the wrong one for
+        the 30-or-so pairs a detour search used to ask for one by one.
+        """
+
+        def build() -> List[Trip]:
+            rows = self._rows_from_sweeps(sweeps, origin, destination)
+            if rows is None:
+                free, paid = self._client.search_all_trips(
+                    origin=origin, destination=destination, trip_date=trip_date)
+                trips = free if only_max else free + paid
+            else:
+                free, paid = self._client._split_rows(rows)
+                trips = free if only_max else free + paid
             # TER legs are paid (per-km), so only when paid legs are allowed
             if not only_max:
                 from network import ter
                 if ter.has_data():
                     trips = trips + ter.legs_between(origin, destination, trip_date)
-            self._cache[key] = trips
-        return self._cache[key]
+            return trips
+
+        key = (normalise(origin), normalise(destination), trip_date.isoformat(),
+               only_max)
+        return _PAIR_CACHE.get_or(key, build)
 
     def _transfer_candidates(self, o_canon: str, d_canon: str,
                              trip_date: date, include_ter: bool) -> List[str]:
@@ -303,7 +344,7 @@ class TripDecomposer:
         return sorted(vias, key=_priority)
 
     def clear_cache(self) -> None:
-        self._cache.clear()
+        _PAIR_CACHE.clear()
 
     def _can_connect(self, arr: Trip, dep: Trip) -> bool:
         if arr.departure_date != dep.departure_date:
@@ -352,6 +393,12 @@ class TripDecomposer:
         intermediates = self._transfer_candidates(
             o_canon, d_canon, trip_date, include_ter=include_paid)[: self.MAX_INTERMEDIATES]
         if intermediates:
+            # Two sweeps cover every pair below: everything leaving the origin
+            # answers origin->via, everything arriving at the destination
+            # answers via->destination.  Cold that is ~24 requests for the
+            # whole detour search; warm it is none.
+            sweeps = [self._client.day(o_canon, SIDE_FROM, trip_date),
+                      self._client.day(d_canon, SIDE_TO, trip_date)]
             _dep = departure_after
             _arr = arrival_before
             _paid = include_paid
@@ -359,10 +406,12 @@ class TripDecomposer:
 
             def _eval(via: str) -> List[CompositeTrip]:
                 local: List[CompositeTrip] = []
-                leg1 = self._fetch(o_canon, via, trip_date, only_max=not _paid)
+                leg1 = self._fetch(o_canon, via, trip_date, only_max=not _paid,
+                                   sweeps=sweeps)
                 if not leg1:
                     return local
-                leg2 = self._fetch(via, d_canon, trip_date, only_max=not _paid)
+                leg2 = self._fetch(via, d_canon, trip_date, only_max=not _paid,
+                                   sweeps=sweeps)
                 if not leg2:
                     return local
                 for t1 in leg1:
@@ -394,23 +443,12 @@ class TripDecomposer:
             # destination (you'd just get off there — a descentre, not a
             # change of trains).  Verified exactly against each first-leg
             # train's real ordered stops, prefetched in parallel.
-            leg1_trains = {c.legs[0].trip.train_number for c in raw_detours}
-            with ThreadPoolExecutor(max_workers=self._workers) as ex:
-                list(ex.map(lambda tn: self._ordered_stops(tn, trip_date), leg1_trains))
             for c in raw_detours:
-                if not self._passes_through(c.legs[0].trip, d_canon, trip_date):
+                if not self._passes_through(c.legs[0].trip, d_canon, trip_date,
+                                            sweeps):
                     alternatives.append(c)
 
-        # Sort and deduplicate
-        alternatives.sort(key=lambda x: x.score)
-        seen: Set[Tuple[time, time, int]] = set()
-        unique: List[CompositeTrip] = []
-        for alt in alternatives:
-            key = (alt.departure_time, alt.arrival_time, alt.max_legs)
-            if key not in seen:
-                seen.add(key)
-                unique.append(alt)
-        return unique
+        return _best_per_departure(alternatives)
 
     def find_max_only_combos(self, origin: str, destination: str, trip_date: date) -> List[CompositeTrip]:
         return self.find_alternatives(origin, destination, trip_date, include_paid=False)
@@ -455,10 +493,16 @@ class TripDecomposer:
         if not destinations:
             return []
 
-        # fetch all free trips from origin to those termini (parallel)
-        free_dict = self._client.search_all_to_destinations(
-            origin=origin_full, destinations=destinations,
-            trip_date=trip_date, only_available=True, workers=self._workers)
+        # Every free trip from the origin, from one sweep of the origin's day.
+        # The termini above only filter what comes back, so asking for all of
+        # them costs the same one sweep rather than one request per terminus.
+        index = self._client.day(o_canon, SIDE_FROM, trip_date)
+        free, _paid = self._client._split_rows(index.free_rows)
+        free_dict: Dict[str, List[Trip]] = {}
+        wanted = {normalise(x) for x in destinations}
+        for trip in free:
+            if normalise(trip.destination) in wanted:
+                free_dict.setdefault(str(trip.destination), []).append(trip)
 
         # One candidate trip per (train_no), skipping trips already going
         # straight to the target (those show up under DIRECT) and those that
@@ -475,27 +519,20 @@ class TripDecomposer:
                 candidates.setdefault(trip.train_number, trip)
 
         results: List[CompositeTrip] = []
-        with ThreadPoolExecutor(max_workers=self._workers) as ex:
-            futures = {ex.submit(self._ordered_stops, tn, trip_date): trip
-                       for tn, trip in candidates.items()}
-            for future in as_completed(futures):
-                trip = futures[future]
-                try:
-                    future.result()
-                except Exception:
-                    continue
-                # the train must reach the target *before* its booked
-                # terminus, so you can actually get off there
-                if not self._passes_through(trip, t_canon, trip_date):
-                    continue
-                alight = self._arrival_at(trip, t_canon, trip_date)
-                if arrival_before and alight and alight > arrival_before:
-                    continue
-                results.append(CompositeTrip(
-                    legs=[TripLeg(trip=trip, is_max=True)],
-                    alight_station=t_canon,
-                    alight_time=alight,
-                ))
+        sweeps = [index]
+        for trip in candidates.values():
+            # the train must reach the target *before* its booked terminus, so
+            # you can actually get off there (stops come from the same sweep)
+            if not self._passes_through(trip, t_canon, trip_date, sweeps):
+                continue
+            alight = self._arrival_at(trip, t_canon, trip_date, sweeps)
+            if arrival_before and alight and alight > arrival_before:
+                continue
+            results.append(CompositeTrip(
+                legs=[TripLeg(trip=trip, is_max=True)],
+                alight_station=t_canon,
+                alight_time=alight,
+            ))
 
         results.sort(key=lambda c: c.score)
         return results

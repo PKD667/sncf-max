@@ -1,18 +1,71 @@
-"""Client for the SNCF Max public API - Trip Discovery."""
+"""Client for the SNCF Max public API - Trip Discovery.
+
+Every request this client makes goes through one shared budget and one
+shared cache (``network.cache``), and the batch questions - "everything
+leaving this station that day" - are answered by ``DayIndex`` sweeps
+instead of one request per destination.  Both exist because one frontend
+click used to cost ~220 requests and 40-220 seconds.
+"""
 
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Any, Optional, Iterator, Set, Tuple, Callable
 from urllib.parse import urljoin
 from datetime import date, datetime, timedelta
+import json
 import time
 import logging
 
 from models import Trip, Station, TripStatus, SearchCriteria
 from config import SNCFConfig, default_config, get_station_name
+from network.cache import TTLCache, TokenBucket
+from network.dayindex import (
+    DayIndex,
+    SIDE_FROM,
+    SIDE_TO,
+    normalise,
+    sort_key,
+)
 from network.fares import estimate_fare
 
 logger = logging.getLogger(__name__)
+
+# Fields every cached query asks for: the four Trip needs, plus the label
+# bits the frontend shows.  Asking for less keeps each page ~30% smaller.
+_RECORD_FIELDS = (
+    "date,origine,destination,heure_depart,heure_arrivee,train_no,"
+    "od_happy_card,entity,axe"
+)
+
+# Shared by every client instance in the process, deliberately: the budget
+# is politeness towards one dataset, not a per-object private allowance.
+_RAW_CACHE = TTLCache(ttl=default_config.CACHE_TTL, maxsize=2048)
+_DAY_CACHE = TTLCache(ttl=default_config.CACHE_TTL,
+                      maxsize=default_config.DAILY_CACHE_SIZE)
+_STOPS_CACHE = TTLCache(ttl=default_config.CACHE_TTL, maxsize=4096)
+_BUDGET = TokenBucket(rate=default_config.REQUEST_RATE,
+                      burst=default_config.REQUEST_BURST)
+
+
+def _quote(value: str) -> str:
+    """Quote a value for an ODSQL `where` clause."""
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def clear_caches() -> None:
+    """Forget every cached answer (tests, and the CLI's --no-cache)."""
+    _RAW_CACHE.clear()
+    _DAY_CACHE.clear()
+    _STOPS_CACHE.clear()
+
+
+def cache_stats() -> Dict[str, Any]:
+    return {
+        "raw": _RAW_CACHE.stats(),
+        "days": _DAY_CACHE.stats(),
+        "stops": _STOPS_CACHE.stats(),
+        "waited": round(_BUDGET.waited, 2),
+    }
 
 
 class SNCFMaxClient:
@@ -39,7 +92,6 @@ class SNCFMaxClient:
             "DNT": "1",
             "Connection": "keep-alive",
         })
-        self._last_request_time = 0.0
         self._proxy = self.config.get_proxy_dict()
         if self._proxy:
             self.session.proxies.update(self._proxy)
@@ -54,10 +106,8 @@ class SNCFMaxClient:
     # ------------------------------------------------------------------
 
     def _rate_limit(self) -> None:
-        elapsed = time.time() - self._last_request_time
-        if elapsed < self.config.REQUEST_DELAY:
-            time.sleep(self.config.REQUEST_DELAY - elapsed)
-        self._last_request_time = time.time()
+        """Spend one request from the process-wide budget."""
+        _BUDGET.take()
 
     def _build_where_clause(
         self,
@@ -90,6 +140,12 @@ class SNCFMaxClient:
         return " and ".join(conditions) if conditions else ""
 
     def _request(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """One cached, paced query against the records endpoint."""
+        key = ("records", self._records_url,
+               json.dumps(params, sort_keys=True, default=str))
+        return _RAW_CACHE.get_or(key, lambda: self._request_uncached(params))
+
+    def _request_uncached(self, params: Dict[str, Any]) -> Dict[str, Any]:
         self._rate_limit()
         response = self.session.get(self._records_url, params=params, timeout=30)
         response.raise_for_status()
@@ -97,6 +153,89 @@ class SNCFMaxClient:
 
     def _parse_trip(self, record: dict) -> Trip:
         return Trip.from_api_response(record)
+
+    # ------------------------------------------------------------------
+    # Station-day sweeps
+    # ------------------------------------------------------------------
+
+    def day(self, station: str, side: str, trip_date: date) -> DayIndex:
+        """Every record touching *station* on *trip_date*, one side.
+
+        Fetched once per (side, station, date) for the whole process and
+        shared single-flight, so two clicks at the same moment cost one
+        sweep.  ``side`` is :data:`network.dayindex.SIDE_FROM` (what leaves
+        the station) or ``SIDE_TO`` (what reaches it).
+        """
+        station = get_station_name(station)
+        key = ("day", side, normalise(station), trip_date.isoformat())
+        return _DAY_CACHE.get_or(
+            key, lambda: self._load_day(station, side, trip_date))
+
+    def _page_size(self) -> int:
+        """Rows per request: the config's PAGE_SIZE, within the API's cap."""
+        return max(1, min(int(self.config.PAGE_SIZE or 100), 100))
+
+    def _paged(self, params: Dict[str, Any]) -> List[dict]:
+        """Every row matching *params*, paged by ``total_count``.
+
+        The first page reports how many rows there are, so the rest can go in
+        parallel instead of guessing until a short page arrives.  Truncating
+        at one page is not an option: a long train has more than 100
+        origin/destination pairs.
+        """
+        size = self._page_size()
+        base = dict(params, limit=size)
+        first = self._request(dict(base, offset=0))
+        rows: List[dict] = list(first.get("results", []))
+        total = int(first.get("total_count") or len(rows))
+        offsets = list(range(size, total, size))
+        if offsets:
+            def _page(offset: int) -> List[dict]:
+                return self._request(dict(base, offset=offset)).get("results", [])
+            with ThreadPoolExecutor(
+                    max_workers=max(1, self.config.PAGE_WORKERS)) as ex:
+                for page in ex.map(_page, offsets):
+                    rows.extend(page)
+        return rows
+
+    def _load_day(self, station: str, side: str, trip_date: date) -> DayIndex:
+        column = "origine" if side == SIDE_FROM else "destination"
+        rows = self._paged({
+            "where": f'date=date\'{trip_date.isoformat()}\' and {column}="{_quote(station)}"',
+            "order_by": "heure_depart",
+            "select": _RECORD_FIELDS,
+        })
+        return DayIndex(rows, station, side, trip_date)
+
+    def train_stops(self, train_no: str, trip_date: date) -> List[Tuple[str, str]]:
+        """A train's stops on a date, as (station, HH:MM), in travel order.
+
+        One request per (train, date) for the whole process.  Prefer the
+        station-day sweep when it already knows the train - a sweep holds
+        every stop a train makes after its origin, which is the only part
+        the callers ask about - and fall back to this for the rest.
+        """
+        key = ("stops", str(train_no), trip_date.isoformat())
+        return _STOPS_CACHE.get_or(
+            key, lambda: self._load_train_stops(train_no, trip_date))
+
+    def _load_train_stops(self, train_no: str, trip_date: date) -> List[Tuple[str, str]]:
+        rows = self._paged({
+            "where": self._build_where_clause(
+                trip_date=trip_date, only_available=False, train_no=str(train_no)),
+            "order_by": "heure_depart",
+            "select": _RECORD_FIELDS,
+        })
+        first_seen: Dict[str, str] = {}
+        for record in rows:
+            for station_key, time_key in (("origine", "heure_depart"),
+                                          ("destination", "heure_arrivee")):
+                s = record.get(station_key)
+                hhmm = record.get(time_key) or ""
+                if s and (s not in first_seen
+                          or sort_key(hhmm) < sort_key(first_seen[s])):
+                    first_seen[s] = hhmm
+        return sorted(first_seen.items(), key=lambda kv: sort_key(kv[1]))
 
     # ------------------------------------------------------------------
     # Public query methods
@@ -297,18 +436,23 @@ class SNCFMaxClient:
             "group_by": "origine",
             "limit": 100,
         }
-        self._rate_limit()
-        resp = self.session.get(self._records_url, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        data = self._request(params)
         stations = [
             r.get("origine") for r in data.get("results", []) if r.get("origine")
         ]
         return sorted(set(stations))
 
     # ------------------------------------------------------------------
-    # Parallel batch search — runs N destinations concurrently
+    # Batch search — one station-day sweep answers every destination
     # ------------------------------------------------------------------
+
+    def _split_rows(self, rows: List[dict]) -> Tuple[List[Trip], List[Trip]]:
+        free: List[Trip] = []
+        paid: List[Trip] = []
+        for record in rows:
+            trip = self._parse_trip(record)
+            (free if trip.is_free else paid).append(trip)
+        return free, paid
 
     def search_all_to_destinations(
         self,
@@ -318,28 +462,20 @@ class SNCFMaxClient:
         only_available: bool = True,
         workers: int = 8,
     ) -> Dict[str, List[Trip]]:
-        """Search origin->each destination in parallel."""
-        if trip_date is None:
-            trip_date = date.today() + timedelta(days=1)
-        origin_full = get_station_name(origin)
-        results: Dict[str, List[Trip]] = {}
+        """Every destination reachable from *origin*, from one sweep.
 
-        def _fetch(dest: str) -> Tuple[str, List[Trip]]:
-            trips = self.search_trips(
-                origin=origin_full,
-                destination=dest,
-                trip_date=trip_date,
-                only_available=only_available,
-            )
-            return (dest, trips)
-
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(_fetch, d): d for d in destinations}
-            for future in as_completed(futures):
-                dest, trips = future.result()
-                if trips:
-                    results[dest] = trips
-
+        ``destinations`` still filters what is returned, so callers keep
+        their own candidate set; ``workers`` is accepted for compatibility
+        and ignored - the sweep does its own parallel paging.
+        """
+        free, paid = self.search_all_to_destinations_split(
+            origin=origin, destinations=destinations, trip_date=trip_date)
+        results = dict(paid)
+        if only_available:
+            results = dict(free)
+        else:
+            for dest, trips in free.items():
+                results[dest] = results.get(dest, []) + trips
         return results
 
     def search_all_to_destinations_split(
@@ -349,30 +485,18 @@ class SNCFMaxClient:
         trip_date: Optional[date] = None,
         workers: int = 8,
     ) -> Tuple[Dict[str, List[Trip]], Dict[str, List[Trip]]]:
-        """Parallel search, returning (free_dict, paid_dict) per destination."""
+        """(free_dict, paid_dict) per destination, from one origin sweep."""
         if trip_date is None:
             trip_date = date.today() + timedelta(days=1)
-        origin_full = get_station_name(origin)
+        index = self.day(get_station_name(origin), SIDE_FROM, trip_date)
         free_dict: Dict[str, List[Trip]] = {}
         paid_dict: Dict[str, List[Trip]] = {}
-
-        def _fetch(dest: str) -> Tuple[str, List[Trip], List[Trip]]:
-            free, paid = self.search_all_trips(
-                origin=origin_full,
-                destination=dest,
-                trip_date=trip_date,
-            )
-            return (dest, free, paid)
-
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(_fetch, d): d for d in destinations}
-            for future in as_completed(futures):
-                dest, free, paid = future.result()
-                if free:
-                    free_dict[dest] = free
-                if paid:
-                    paid_dict[dest] = paid
-
+        for dest in destinations:
+            free, paid = self._split_rows(index.rows_to(dest))
+            if free:
+                free_dict[dest] = free
+            if paid:
+                paid_dict[dest] = paid
         return free_dict, paid_dict
 
     def search_all_from_origins_split(
@@ -382,30 +506,18 @@ class SNCFMaxClient:
         trip_date: Optional[date] = None,
         workers: int = 8,
     ) -> Tuple[Dict[str, List[Trip]], Dict[str, List[Trip]]]:
-        """Parallel reverse search, returning (free_dict, paid_dict) per origin."""
+        """(free_dict, paid_dict) per origin, from one sweep into the destination."""
         if trip_date is None:
             trip_date = date.today() + timedelta(days=1)
-        destination_full = get_station_name(destination)
+        index = self.day(get_station_name(destination), SIDE_TO, trip_date)
         free_dict: Dict[str, List[Trip]] = {}
         paid_dict: Dict[str, List[Trip]] = {}
-
-        def _fetch(orig: str) -> Tuple[str, List[Trip], List[Trip]]:
-            free, paid = self.search_all_trips(
-                origin=orig,
-                destination=destination_full,
-                trip_date=trip_date,
-            )
-            return (orig, free, paid)
-
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(_fetch, o): o for o in origins}
-            for future in as_completed(futures):
-                orig, free, paid = future.result()
-                if free:
-                    free_dict[orig] = free
-                if paid:
-                    paid_dict[orig] = paid
-
+        for orig in origins:
+            free, paid = self._split_rows(index.rows_to(orig))
+            if free:
+                free_dict[orig] = free
+            if paid:
+                paid_dict[orig] = paid
         return free_dict, paid_dict
 
     def get_routes(self, limit: int = 100) -> List[Tuple[str, str]]:
@@ -414,10 +526,7 @@ class SNCFMaxClient:
             "group_by": "origine, destination",
             "limit": limit,
         }
-        self._rate_limit()
-        resp = self.session.get(self._records_url, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        data = self._request(params)
         routes = [
             (r.get("origine"), r.get("destination"))
             for r in data.get("results", [])
